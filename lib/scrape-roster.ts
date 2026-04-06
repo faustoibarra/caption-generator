@@ -1,7 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { createServiceClient } from '@/lib/supabase/server';
 
-const anthropic = new Anthropic({ timeout: 60_000 }); // 60s — fail fast rather than hanging
+const anthropic = new Anthropic({
+  timeout: 120_000,  // 2 min per attempt
+  maxRetries: 4,     // up to 5 total attempts; SDK auto-retries on 529 overloaded
+});
 
 export interface AthleteResult {
   id: string;
@@ -79,7 +82,13 @@ export async function scrapeRoster(
     .map((b, i) => `--- Embedded JSON block ${i + 1} (${b.length} chars) ---\n${b.slice(0, BLOCK_CAP)}`)
     .join('\n');
 
-  console.log(`[scrape-roster] Calling Claude  stripped_chars=${strippedHtml.length}  structured_chars=${structuredData.reduce((s, b) => s + Math.min(b.length, BLOCK_CAP), 0)}`);
+  // Cap stripped HTML at 200 KB — enough for any roster page; beyond this is mostly boilerplate
+  const HTML_CAP = 200_000;
+  const cappedHtml = strippedHtml.length > HTML_CAP
+    ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
+    : strippedHtml;
+
+  console.log(`[scrape-roster] Calling Claude  stripped_chars=${strippedHtml.length}  capped_chars=${cappedHtml.length}  structured_chars=${structuredData.reduce((s, b) => s + Math.min(b.length, BLOCK_CAP), 0)}`);
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 4096,
@@ -90,7 +99,7 @@ export async function scrapeRoster(
 
 Here is the stripped HTML of the roster page (scripts and styles removed):
 <html>
-${strippedHtml}
+${cappedHtml}
 </html>
 ${structuredData.length > 0 ? `
 The following is the complete embedded JSON state from the page (Nuxt/Vue SSR devalue format).

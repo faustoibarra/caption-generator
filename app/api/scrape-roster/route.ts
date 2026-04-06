@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { scrapeRoster } from '@/lib/scrape-roster';
 
+export const maxDuration = 300;
+
 export async function POST(req: NextRequest) {
   try {
     const { session_id, roster_url, sport, has_jersey_numbers } = await req.json();
