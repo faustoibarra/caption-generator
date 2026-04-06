@@ -20,7 +20,7 @@ async function uploadFile(
   file: File,
   sessionId: string,
   onProgress: (pct: number) => void
-): Promise<string> {
+): Promise<{ photo_id: string; thumbnail_url: string | null }> {
   // Step 1: get a signed upload URL and photo_id from the server (tiny JSON request, no size limit)
   const urlRes = await fetch('/api/photos/upload-url', {
     method: 'POST',
