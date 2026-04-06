@@ -24,12 +24,13 @@ export async function GET(req: NextRequest) {
     }
 
     // All rows from the most recent session
+    interface RosterRow { id: string; session_id: string; name: string; jersey_number: string | null; headshot_url: string | null; }
     const sessionId = rows[0].session_id;
-    const sessionRows = rows.filter((r) => r.session_id === sessionId);
+    const sessionRows = (rows as RosterRow[]).filter((r) => r.session_id === sessionId);
 
     // Generate signed URLs for headshots
     const athletes = await Promise.all(
-      sessionRows.map(async (row) => {
+      sessionRows.map(async (row: RosterRow) => {
         let signedUrl: string | null = null;
         if (row.headshot_url) {
           const { data: signed } = await supabase.storage
