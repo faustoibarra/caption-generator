@@ -37,7 +37,6 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await supabase.from('roster_athletes').delete().eq('session_id', sessionId);
     await supabase.from('photos').delete().eq('session_id', sessionId);
 
     return NextResponse.json({ ok: true });
