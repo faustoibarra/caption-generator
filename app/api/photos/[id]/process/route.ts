@@ -53,6 +53,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  console.log(`[process] START id=${id}`);
 
   let body: ProcessBody;
   try {
@@ -72,10 +73,12 @@ export async function POST(
     .single();
 
   if (photoErr || !photo) {
+    console.log(`[process] Photo not found id=${id} err=${photoErr?.message}`);
     return NextResponse.json({ error: 'Photo not found' }, { status: 404 });
   }
 
   const { session_id, storage_path, filename } = photo;
+  console.log(`[process] photo found file=${filename} storage=${storage_path}`);
   await supabase.from('photos').update({ status: 'processing' }).eq('id', id);
 
   // 2. Download + resize original JPG
@@ -84,9 +87,11 @@ export async function POST(
     .download(storage_path);
 
   if (origErr || !origBlob) {
+    console.log(`[process] Download failed id=${id} err=${origErr?.message}`);
     await supabase.from('photos').update({ status: 'error', error_message: 'Failed to download original' }).eq('id', id);
     return NextResponse.json({ error: 'Failed to download original photo' }, { status: 500 });
   }
+  console.log(`[process] Downloaded original id=${id}`);
 
   const originalBuffer = Buffer.from(await origBlob.arrayBuffer());
 
@@ -181,14 +186,17 @@ Do not include opponent athletes.
 If no athletes can be identified, return: { "athletes": [] }`,
   });
 
-  // 6. Call Claude with one automatic retry
+  // 6. Call Claude
   const processedPath = `photos-processed/${session_id}/${filename}`;
+  console.log(`[process] Calling Claude id=${id} headshots=${headshotData.filter(h => h.base64).length}`);
 
   let claudeText: string;
   try {
     claudeText = await callClaude(content);
+    console.log(`[process] Claude done id=${id}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Claude API error';
+    console.log(`[process] Claude error id=${id} msg=${msg}`);
     await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
     await supabase.from('photos').update({ status: 'error', error_message: msg, processed_path: processedPath }).eq('id', id);
     const { data: thumb } = await supabase.storage.from('photos-original').createSignedUrl(storage_path, 3600);
