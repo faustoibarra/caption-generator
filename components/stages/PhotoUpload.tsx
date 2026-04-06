@@ -15,48 +15,44 @@ interface FileEntry {
   errorMessage?: string;
 }
 
-function uploadFile(
+async function uploadFile(
   file: File,
   sessionId: string,
   onProgress: (pct: number) => void
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('session_id', sessionId);
+  // Step 1: get a signed upload URL and photo_id from the server (tiny JSON request, no size limit)
+  const urlRes = await fetch('/api/photos/upload-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, filename: file.name }),
+  });
+  if (!urlRes.ok) {
+    const data = await urlRes.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error ?? `Upload failed (${urlRes.status})`);
+  }
+  const { photo_id, signed_url } = await urlRes.json() as { photo_id: string; signed_url: string };
 
+  // Step 2: PUT the file directly to Supabase Storage — bypasses Vercel's 4.5MB body limit
+  await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/photos/upload');
+    xhr.open('PUT', signed_url);
+    xhr.setRequestHeader('Content-Type', 'image/jpeg');
 
     xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     });
 
     xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          resolve(data.photo_id as string);
-        } catch {
-          reject(new Error('Invalid response from server'));
-        }
-      } else {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          reject(new Error(data.error ?? `Upload failed (${xhr.status})`));
-        } catch {
-          reject(new Error(`Upload failed (${xhr.status})`));
-        }
-      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Storage upload failed (${xhr.status})`));
     });
-
     xhr.addEventListener('error', () => reject(new Error('Network error')));
     xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
 
-    xhr.send(formData);
+    xhr.send(file);
   });
+
+  return photo_id;
 }
 
 export function PhotoUpload() {
