@@ -185,6 +185,26 @@ export function ProcessingProgress() {
           ...(data.filename ? { filename: data.filename } : {}),
         });
       } catch {
+        // Fetch failed (connection dropped, timeout, etc.).
+        // The server may have completed — check actual DB status before marking error.
+        try {
+          const check = await fetch(`/api/photos/${id}/status`);
+          if (check.ok) {
+            const actual = await check.json();
+            updateRow(id, {
+              status: (actual.status as PhotoStatus) ?? 'error',
+              matchedNames: actual.matched_names ?? null,
+              matchType: actual.match_type ?? null,
+              faceConfidence: actual.face_confidence ?? null,
+              jerseyConfidence: actual.jersey_confidence ?? null,
+              thumbnailUrl: actual.thumbnail_url ?? null,
+              ...(actual.filename ? { filename: actual.filename } : {}),
+            });
+            return;
+          }
+        } catch {
+          // status check also failed — fall through to error
+        }
         updateRow(id, { status: 'error' });
       }
     }
