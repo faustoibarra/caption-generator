@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import JSZip from 'jszip';
 import { useJobStore } from '@/lib/store';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -64,6 +65,7 @@ export function Results() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{ done: number; total: number } | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -82,25 +84,46 @@ export function Results() {
     if (!sessionId) return;
     setDownloading(true);
     setDownloadError(null);
+    setDownloadProgress(null);
+
     try {
-      const resp = await fetch(
-        `/api/download?session_id=${encodeURIComponent(sessionId)}&job_name=${encodeURIComponent(jobName || 'photos')}`
-      );
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error ?? `Download failed (${resp.status})`);
+      // 1. Get signed URLs for all processed files
+      const urlsResp = await fetch(`/api/download-urls?session_id=${encodeURIComponent(sessionId)}`);
+      if (!urlsResp.ok) {
+        const data = await urlsResp.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error ?? `Failed to get download URLs (${urlsResp.status})`);
       }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
+      const { files } = await urlsResp.json() as { files: { filename: string; url: string }[] };
+
+      // 2. Download each file and add to ZIP, updating progress as we go
+      const zip = new JSZip();
+      setDownloadProgress({ done: 0, total: files.length });
+
+      for (let i = 0; i < files.length; i++) {
+        const { filename, url } = files[i];
+        const fileResp = await fetch(url);
+        if (!fileResp.ok) throw new Error(`Failed to fetch ${filename}`);
+        const buffer = await fileResp.arrayBuffer();
+        zip.file(filename, buffer);
+        setDownloadProgress({ done: i + 1, total: files.length });
+      }
+
+      // 3. Generate ZIP in browser
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const blobUrl = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
-      a.href = url;
+      a.href = blobUrl;
       a.download = `${jobName || 'photos'}.zip`;
       a.click();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(blobUrl);
+
+      // 4. Clean up storage after successful download
+      await fetch(`/api/download?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Download failed');
     } finally {
       setDownloading(false);
+      setDownloadProgress(null);
     }
   }
 
@@ -195,16 +218,32 @@ export function Results() {
 
         {/* Download / New Job actions */}
         {!loading && !fetchError && (
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-            <Button onClick={handleDownload} disabled={downloading}>
-              {downloading ? 'Generating ZIP…' : 'Download All'}
-            </Button>
-            {downloadError && (
-              <div className="flex items-center gap-2 text-sm text-red-600">
-                <span>{downloadError}</span>
-                <Button variant="outline" size="sm" onClick={handleDownload} disabled={downloading}>
-                  Retry
-                </Button>
+          <div className="space-y-2">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+              <Button onClick={handleDownload} disabled={downloading}>
+                {downloading ? 'Preparing ZIP…' : 'Download All'}
+              </Button>
+              {downloadError && (
+                <div className="flex items-center gap-2 text-sm text-red-600">
+                  <span>{downloadError}</span>
+                  <Button variant="outline" size="sm" onClick={handleDownload} disabled={downloading}>
+                    Retry
+                  </Button>
+                </div>
+              )}
+            </div>
+            {downloading && downloadProgress && (
+              <div className="space-y-1 max-w-xs">
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>Downloading files…</span>
+                  <span>{downloadProgress.done} / {downloadProgress.total}</span>
+                </div>
+                <div className="h-2 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-150"
+                    style={{ width: `${Math.round((downloadProgress.done / downloadProgress.total) * 100)}%` }}
+                  />
+                </div>
               </div>
             )}
           </div>
