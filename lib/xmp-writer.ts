@@ -3,7 +3,7 @@ import { DOMParser, XMLSerializer, Document, Element } from '@xmldom/xmldom';
 const XMP_NAMESPACE = 'http://ns.adobe.com/xap/1.0/\0';
 const DC_NS = 'http://purl.org/dc/elements/1.1/';
 const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
-const IPTC_EXT_NS = 'http://iptc.org/std/Iptc4xmpExt/2008-02-29/';
+const GETTY_NS = 'http://xmp.gettyimages.com/gift/1.0/';
 
 /**
  * Writes athlete names into the XMP metadata of a JPEG buffer.
@@ -189,28 +189,28 @@ function updateDcDescription(doc: Document, nameString: string): void {
 }
 
 /**
- * Writes athlete names to Iptc4xmpExt:PersonInImage — the field Photo Mechanic
+ * Writes athlete names to GettyImagesGIFT:Personality — the field Photo Mechanic
  * labels "Personality". Each athlete gets a separate rdf:li in an rdf:Bag.
- * Replaces any existing PersonInImage value entirely.
+ * Replaces any existing Personality value entirely.
  */
 function updatePersonInImage(doc: Document, names: string[]): void {
   const rdfDescs = doc.getElementsByTagNameNS(RDF_NS, 'Description');
   if (rdfDescs.length === 0) return;
   const rdfDesc = rdfDescs[0];
 
-  // Ensure the namespace is declared on the rdf:Description element
-  if (!rdfDesc.getAttributeNS('http://www.w3.org/2000/xmlns/', 'Iptc4xmpExt')) {
-    rdfDesc.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:Iptc4xmpExt', IPTC_EXT_NS);
+  // Ensure the Getty namespace is declared on the rdf:Description element
+  if (!rdfDesc.getAttributeNS('http://www.w3.org/2000/xmlns/', 'GettyImagesGIFT')) {
+    rdfDesc.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:GettyImagesGIFT', GETTY_NS);
   }
 
-  // Remove existing PersonInImage if present
-  const existing = doc.getElementsByTagNameNS(IPTC_EXT_NS, 'PersonInImage');
+  // Remove existing Personality element if present
+  const existing = doc.getElementsByTagNameNS(GETTY_NS, 'Personality');
   for (let i = existing.length - 1; i >= 0; i--) {
     existing[i].parentNode?.removeChild(existing[i]);
   }
 
-  // Build <Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Name</rdf:li>...</rdf:Bag></Iptc4xmpExt:PersonInImage>
-  const personEl = doc.createElementNS(IPTC_EXT_NS, 'Iptc4xmpExt:PersonInImage');
+  // Build <GettyImagesGIFT:Personality><rdf:Bag><rdf:li>Name</rdf:li>...</rdf:Bag></GettyImagesGIFT:Personality>
+  const personEl = doc.createElementNS(GETTY_NS, 'GettyImagesGIFT:Personality');
   const bag = doc.createElementNS(RDF_NS, 'rdf:Bag');
   for (const name of names) {
     const li = doc.createElementNS(RDF_NS, 'rdf:li');
