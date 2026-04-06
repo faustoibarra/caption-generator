@@ -29,9 +29,18 @@ function stripHtml(html: string): string {
     // Remove HTML comments
     .replace(/<!--[\s\S]*?-->/g, '')
     // Strip all attributes except those that carry URLs (src, href, data-src, data-*)
+    // Also extract the first URL from srcset (responsive images store headshots there)
     .replace(/<([a-z][a-z0-9]*)\s([^>]+)>/gi, (match, tag, attrs) => {
-      const kept = (attrs.match(/(?:src|href|data-[a-z][a-z0-9-]*)="[^"]*"/gi) ?? []).join(' ');
-      return kept ? `<${tag} ${kept}>` : `<${tag}>`;
+      const kept = (attrs.match(/(?:src|href|data-[a-z][a-z0-9-]*)="[^"]*"/gi) ?? []) as string[];
+      // If no src but has srcset, pull the first URL out as src
+      if (!kept.some(a => a.startsWith('src=')) ) {
+        const srcsetMatch = attrs.match(/srcset="([^"]+)"/i);
+        if (srcsetMatch) {
+          const firstUrl = srcsetMatch[1].split(',')[0].trim().split(/\s+/)[0];
+          if (firstUrl) kept.push(`src="${firstUrl}"`);
+        }
+      }
+      return kept.length > 0 ? `<${tag} ${kept.join(' ')}>` : `<${tag}>`;
     })
     // Collapse runs of whitespace / blank lines
     .replace(/[ \t]+/g, ' ')
