@@ -6,7 +6,10 @@ import { writeAthleteNames } from '@/lib/xmp-writer';
 
 export const maxDuration = 300;
 
-const anthropic = new Anthropic();
+const anthropic = new Anthropic({
+  timeout: 120_000,
+  maxRetries: 4,
+});
 
 type ContentBlock =
   | { type: 'text'; text: string }
@@ -44,13 +47,6 @@ async function callClaude(content: ContentBlock[]): Promise<string> {
   return block.text;
 }
 
-async function callClaudeWithRetry(content: ContentBlock[]): Promise<string> {
-  try {
-    return await callClaude(content);
-  } catch {
-    return await callClaude(content);
-  }
-}
 
 export async function POST(
   request: NextRequest,
@@ -190,7 +186,7 @@ If no athletes can be identified, return: { "athletes": [] }`,
 
   let claudeText: string;
   try {
-    claudeText = await callClaudeWithRetry(content);
+    claudeText = await callClaude(content);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Claude API error';
     await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
