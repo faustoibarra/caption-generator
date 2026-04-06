@@ -87,14 +87,23 @@ export async function scrapeRoster(
   // Call Claude to extract athletes
   const t2 = Date.now();
 
-  // Hard cap on stripped HTML — 60 KB is enough to cover any roster page layout
-  const HTML_CAP = 60_000;
-  const cappedHtml = strippedHtml.length > HTML_CAP
-    ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
-    : strippedHtml;
+  // When structured data (Nuxt/Vue SSR) is present, skip the stripped HTML entirely —
+  // gostanford.com pages have 60KB+ of nav/config boilerplate before player cards,
+  // so the HTML cap cuts off before any roster content is reached.
+  // Instead give Claude a larger chunk of the structured data which has all player info.
+  const hasStructuredData = structuredData.length > 0;
 
-  // Cap total structured data at 60 KB across all blocks combined
-  const TOTAL_STRUCTURED_CAP = 60_000;
+  // HTML cap: small when structured data is available (just enough for context/sport name),
+  // larger when HTML is the only source.
+  const HTML_CAP = hasStructuredData ? 0 : 60_000;
+  const cappedHtml = HTML_CAP === 0
+    ? ''
+    : strippedHtml.length > HTML_CAP
+      ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
+      : strippedHtml;
+
+  // Structured data cap: 200 KB when it's the primary source, 60 KB otherwise
+  const TOTAL_STRUCTURED_CAP = hasStructuredData ? 200_000 : 60_000;
   let structuredDataForPrompt = '';
   let structuredCharsUsed = 0;
   for (let i = 0; i < structuredData.length; i++) {
@@ -105,20 +114,15 @@ export async function scrapeRoster(
     structuredCharsUsed += chunk.length;
   }
 
-  console.log(`[scrape-roster] Calling Claude  html_chars=${cappedHtml.length}  structured_chars=${structuredCharsUsed}`);
+  console.log(`[scrape-roster] Calling Claude  html_chars=${cappedHtml.length}  structured_chars=${structuredCharsUsed}  structured_data_primary=${hasStructuredData}`);
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 8192,
     messages: [
       {
         role: 'user',
-        content: `You are extracting athlete data from a sports team roster page.
+        content: hasStructuredData ? `You are extracting athlete data from a sports team roster page.
 
-Here is the stripped HTML of the roster page (scripts and styles removed):
-<html>
-${cappedHtml}
-</html>
-${structuredData.length > 0 ? `
 The following is embedded JSON state from the page (Nuxt/Vue SSR devalue format).
 It is a flat array where integer values are indices referencing other elements in the array.
 The athlete names and their headshot URLs are both stored as plain strings within this array.
@@ -126,11 +130,27 @@ Find the section containing player/roster data and extract each athlete's name a
 Prefer the smallest imgproxy image variant (rs:fit:480) as the headshot_url.
 
 ${structuredDataForPrompt}
-` : ''}
+
 Extract all athletes and return a JSON array. For each athlete include:
 - name: full name as shown
 - jersey_number: jersey number as a string, or null if not shown or not applicable
-- headshot_url: the absolute URL to their headshot image found in the structured data above, or null if not found
+- headshot_url: the absolute URL to their headshot image, or null if not found
+
+Return only valid JSON with no commentary. Example:
+[
+  { "name": "Daria Gusarova", "jersey_number": null, "headshot_url": "https://..." },
+  { "name": "Emmy Sharp", "jersey_number": "12", "headshot_url": "https://..." }
+]` : `You are extracting athlete data from a sports team roster page.
+
+Here is the stripped HTML of the roster page (scripts and styles removed):
+<html>
+${cappedHtml}
+</html>
+
+Extract all athletes and return a JSON array. For each athlete include:
+- name: full name as shown
+- jersey_number: jersey number as a string, or null if not shown or not applicable
+- headshot_url: the absolute URL to their headshot image, or null if not found
 
 Return only valid JSON with no commentary. Example:
 [
