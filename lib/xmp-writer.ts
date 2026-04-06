@@ -179,9 +179,9 @@ function updateDcDescription(doc: Document, nameString: string): void {
     const li = items[i];
     const text = li.textContent || '';
     if (text.includes('enter_caption_here')) {
-      // Replace only the placeholder text
+      const newText = text.replace('enter_caption_here', nameString);
       while (li.firstChild) li.removeChild(li.firstChild);
-      li.appendChild(doc.createTextNode(nameString));
+      li.appendChild(doc.createTextNode(newText));
       return;
     }
   }
