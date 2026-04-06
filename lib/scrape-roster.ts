@@ -209,83 +209,88 @@ Return only valid JSON with no commentary. Example:
     }
   }
 
-  const results: AthleteResult[] = [];
-
-  // Headshots are downloaded serially — logged per-athlete so you can see which are slow
+  // Process all athletes in parallel — serial was the main timeout culprit
   const t3 = Date.now();
-  for (const [i, raw] of rawAthletes.entries()) {
-    const ta = Date.now();
-    const athleteId = crypto.randomUUID();
-    let storagePath: string | null = null;
+  const settled = await Promise.allSettled(
+    rawAthletes.map(async (raw, i) => {
+      const ta = Date.now();
+      const athleteId = crypto.randomUUID();
+      let storagePath: string | null = null;
 
-    // Try to download and upload headshot
-    if (raw.headshot_url) {
-      try {
-        const td = Date.now();
-        const imgRes = await fetch(raw.headshot_url, {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-        });
-        const downloadMs = Date.now() - td;
-        if (imgRes.ok) {
-          const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
-          const tu = Date.now();
-          const storageKey = `${sessionId}/${athleteId}.jpg`;
-          const { error: uploadError } = await supabase.storage
-            .from('rosters')
-            .upload(storageKey, imgBuffer, { contentType: 'image/jpeg', upsert: true });
-          const uploadMs = Date.now() - tu;
-          if (!uploadError) {
-            storagePath = storageKey;
-            console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  download=${downloadMs}ms  upload=${uploadMs}ms  size=${imgBuffer.length}B`);
+      // Try to download and upload headshot
+      if (raw.headshot_url) {
+        try {
+          const td = Date.now();
+          const imgRes = await fetch(raw.headshot_url, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+          });
+          const downloadMs = Date.now() - td;
+          if (imgRes.ok) {
+            const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+            const tu = Date.now();
+            const storageKey = `${sessionId}/${athleteId}.jpg`;
+            const { error: uploadError } = await supabase.storage
+              .from('rosters')
+              .upload(storageKey, imgBuffer, { contentType: 'image/jpeg', upsert: true });
+            const uploadMs = Date.now() - tu;
+            if (!uploadError) {
+              storagePath = storageKey;
+              console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  download=${downloadMs}ms  upload=${uploadMs}ms  size=${imgBuffer.length}B`);
+            } else {
+              console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  storage upload error: ${uploadError.message}`);
+            }
           } else {
-            console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  storage upload error: ${uploadError.message}  download=${downloadMs}ms`);
+            console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  headshot fetch ${imgRes.status}  download=${downloadMs}ms`);
           }
-        } else {
-          console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  headshot fetch ${imgRes.status}  download=${downloadMs}ms`);
+        } catch (err) {
+          console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  headshot exception: ${err instanceof Error ? err.message : err}`);
         }
-      } catch (err) {
-        console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  headshot exception: ${err instanceof Error ? err.message : err}`);
+      } else {
+        console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  no headshot URL`);
       }
-    } else {
-      console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  no headshot URL`);
-    }
 
-    // Insert DB row
-    const { error: dbError } = await supabase.from('roster_athletes').insert({
-      id: athleteId,
-      session_id: sessionId,
-      roster_url: rosterUrl,
-      name: raw.name,
-      jersey_number: raw.jersey_number ?? null,
-      headshot_url: storagePath,
-    });
+      // Insert DB row
+      const { error: dbError } = await supabase.from('roster_athletes').insert({
+        id: athleteId,
+        session_id: sessionId,
+        roster_url: rosterUrl,
+        name: raw.name,
+        jersey_number: raw.jersey_number ?? null,
+        headshot_url: storagePath,
+      });
 
-    if (dbError) {
-      console.error(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  DB insert failed:`, JSON.stringify(dbError));
-      continue;
-    }
+      if (dbError) {
+        console.error(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  DB insert failed:`, JSON.stringify(dbError));
+        throw new Error(dbError.message);
+      }
 
-    // Generate signed URL for client display
-    let signedUrl: string | null = null;
-    if (storagePath) {
-      const { data: signed } = await supabase.storage
-        .from('rosters')
-        .createSignedUrl(storagePath, 3600);
-      signedUrl = signed?.signedUrl ?? null;
-    }
+      // Generate signed URL for client display
+      let signedUrl: string | null = null;
+      if (storagePath) {
+        const { data: signed } = await supabase.storage
+          .from('rosters')
+          .createSignedUrl(storagePath, 3600);
+        signedUrl = signed?.signedUrl ?? null;
+      }
 
-    console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  athlete done  time=${elapsed(ta)}`);
+      console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  done  time=${elapsed(ta)}`);
 
-    results.push({
-      id: athleteId,
-      name: raw.name,
-      jersey_number: raw.jersey_number ?? null,
-      headshot_url: signedUrl,
-    });
-  }
+      return {
+        id: athleteId,
+        name: raw.name,
+        jersey_number: raw.jersey_number ?? null,
+        headshot_url: signedUrl,
+      } satisfies AthleteResult;
+    })
+  );
 
-  console.log(`[scrape-roster] Headshot loop done  time=${elapsed(t3)}`);
-  console.log(`[scrape-roster] DONE  athletes=${results.length}  total=${elapsed(t0)}`);
+  console.log(`[scrape-roster] Parallel loop done  time=${elapsed(t3)}`);
+
+  const results: AthleteResult[] = settled
+    .filter((r): r is PromiseFulfilledResult<AthleteResult> => r.status === 'fulfilled')
+    .map((r) => r.value);
+
+  console.log(`[scrape-roster] DONE  athletes=${results.length}/${rawAthletes.length}  total=${elapsed(t0)}`);
 
   return results;
 }
