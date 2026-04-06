@@ -95,7 +95,7 @@ export function ProcessingProgress() {
           matchType: null,
           faceConfidence: null,
           jerseyConfidence: null,
-          thumbnailUrl: null,
+          thumbnailUrl: currentBatchPhotoMeta[id]?.thumbnailUrl ?? null,
         },
       ])
     );

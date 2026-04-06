@@ -20,6 +20,7 @@ export interface Athlete {
 
 export interface BatchPhotoMeta {
   filename: string;
+  thumbnailUrl: string | null;
 }
 
 export interface CumulativeStats {

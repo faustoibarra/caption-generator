@@ -26,6 +26,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Failed to create upload URL: ${signErr?.message}` }, { status: 500 });
   }
 
+  // Signed download URL for thumbnail display (valid 1h; file may not exist yet but URL is ready)
+  const { data: thumb } = await supabase.storage
+    .from('photos-original')
+    .createSignedUrl(storagePath, 3600);
+  const thumbnailUrl = thumb?.signedUrl ?? null;
+
   // Reuse existing DB record if this filename was already uploaded in this session
   // (handles retries without creating duplicate rows)
   const { data: existing } = await supabase
@@ -38,7 +44,7 @@ export async function POST(request: NextRequest) {
   if (existing) {
     // Reset to queued so it will be re-processed
     await supabase.from('photos').update({ status: 'queued', error_message: null }).eq('id', existing.id);
-    return NextResponse.json({ photo_id: existing.id, signed_url: signed.signedUrl, storage_path: storagePath });
+    return NextResponse.json({ photo_id: existing.id, signed_url: signed.signedUrl, thumbnail_url: thumbnailUrl });
   }
 
   // First upload — insert new record
@@ -55,6 +61,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     photo_id: photo.id,
     signed_url: signed.signedUrl,
-    storage_path: storagePath,
+    thumbnail_url: thumbnailUrl,
   });
 }

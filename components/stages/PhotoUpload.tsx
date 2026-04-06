@@ -12,6 +12,7 @@ interface FileEntry {
   progress: number; // 0–100
   status: 'uploading' | 'done' | 'error';
   photoId?: string;
+  thumbnailUrl?: string | null;
   errorMessage?: string;
 }
 
@@ -30,7 +31,7 @@ async function uploadFile(
     const data = await urlRes.json().catch(() => ({}));
     throw new Error((data as { error?: string }).error ?? `Upload failed (${urlRes.status})`);
   }
-  const { photo_id, signed_url } = await urlRes.json() as { photo_id: string; signed_url: string };
+  const { photo_id, signed_url, thumbnail_url } = await urlRes.json() as { photo_id: string; signed_url: string; thumbnail_url: string | null };
 
   // Step 2: PUT the file directly to Supabase Storage — bypasses Vercel's 4.5MB body limit
   await new Promise<void>((resolve, reject) => {
@@ -52,7 +53,7 @@ async function uploadFile(
     xhr.send(file);
   });
 
-  return photo_id;
+  return { photo_id, thumbnail_url };
 }
 
 export function PhotoUpload() {
@@ -78,11 +79,11 @@ export function PhotoUpload() {
           );
         }
       )
-        .then((photoId) => {
-          addUploadedPhoto(photoId);
+        .then(({ photo_id, thumbnail_url }) => {
+          addUploadedPhoto(photo_id);
           setFiles((prev) =>
             prev.map((f) =>
-              f.id === entryId ? { ...f, status: 'done', progress: 100, photoId } : f
+              f.id === entryId ? { ...f, status: 'done', progress: 100, photoId: photo_id, thumbnailUrl: thumbnail_url } : f
             )
           );
         })
@@ -128,7 +129,7 @@ export function PhotoUpload() {
     const completedFiles = files.filter((f) => f.status === 'done' && f.photoId);
     const batchPhotoIds = completedFiles.map((f) => f.photoId!);
     const batchPhotoMeta = Object.fromEntries(
-      completedFiles.map((f) => [f.photoId!, { filename: f.file.name }])
+      completedFiles.map((f) => [f.photoId!, { filename: f.file.name, thumbnailUrl: f.thumbnailUrl ?? null }])
     );
     setProcessing(batchPhotoIds, batchPhotoMeta);
     await fetch('/api/photos/start-processing', { method: 'POST' });
