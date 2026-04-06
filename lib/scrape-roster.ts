@@ -53,11 +53,12 @@ export async function scrapeRoster(
   rosterUrl: string,
   sport: string,
   hasJerseyNumbers: boolean,
+  rescrape = false,
 ): Promise<AthleteResult[]> {
   const t0 = Date.now();
   // Normalize so check-roster can match it reliably
   rosterUrl = rosterUrl.trim().replace(/\/+$/, '');
-  console.log(`[scrape-roster] START  url=${rosterUrl} session=${sessionId}`);
+  console.log(`[scrape-roster] START  url=${rosterUrl} session=${sessionId} rescrape=${rescrape}`);
 
   // Fetch raw HTML
   const t1 = Date.now();
@@ -193,6 +194,21 @@ Return only valid JSON with no commentary. Example:
   }
 
   const supabase = createServiceClient();
+
+  // When the user explicitly chooses to rescrape, delete the old athletes for this URL
+  // so we don't accumulate duplicate rows.
+  if (rescrape) {
+    const { error: delError } = await supabase
+      .from('roster_athletes')
+      .delete()
+      .eq('roster_url', rosterUrl);
+    if (delError) {
+      console.warn(`[scrape-roster] Failed to delete existing athletes: ${delError.message}`);
+    } else {
+      console.log(`[scrape-roster] Deleted existing athletes for url=${rosterUrl}`);
+    }
+  }
+
   const results: AthleteResult[] = [];
 
   // Headshots are downloaded serially — logged per-athlete so you can see which are slow

@@ -63,7 +63,7 @@ export function SetupForm() {
     }
   }
 
-  async function scrapeAndContinue() {
+  async function scrapeAndContinue(rescrape = false) {
     const sessionId = crypto.randomUUID();
     setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, confidenceThreshold, sessionId });
     startScraping();
@@ -78,6 +78,7 @@ export function SetupForm() {
           roster_url: rosterUrl,
           sport,
           has_jersey_numbers: hasJerseyNumbers,
+          rescrape,
         }),
       });
       const data = await res.json();
@@ -109,7 +110,7 @@ export function SetupForm() {
     setExistingRoster(null);
     setSubmitting(true);
     try {
-      await scrapeAndContinue();
+      await scrapeAndContinue(true);
     } finally {
       setSubmitting(false);
     }
