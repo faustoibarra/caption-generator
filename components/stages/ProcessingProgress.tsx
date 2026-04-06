@@ -111,13 +111,14 @@ export function ProcessingProgress() {
   const batchCompleteRef = useRef(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Keep photoRowsRef in sync when state updates
+  // Update ref immediately (synchronous) so checkComplete() always sees latest state,
+  // then sync to React state for rendering.
   function updateRow(id: string, updates: Partial<PhotoRow>) {
-    setPhotoRows((prev) => {
-      const next = { ...prev, [id]: { ...prev[id], ...updates } };
-      photoRowsRef.current = next;
-      return next;
-    });
+    photoRowsRef.current = {
+      ...photoRowsRef.current,
+      [id]: { ...photoRowsRef.current[id], ...updates },
+    };
+    setPhotoRows({ ...photoRowsRef.current });
   }
 
   useEffect(() => {
