@@ -8,9 +8,9 @@ export const maxDuration = 300;
 
 const anthropic = new Anthropic();
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg'; data: string } };
 
 interface ProcessBody {
   confidence_threshold: number;
@@ -18,25 +18,12 @@ interface ProcessBody {
   sport: string;
 }
 
-interface FaceMatch {
-  name: string;
-  face_confidence: number;
-  position_x: number;
-}
-
-interface JerseyMatch {
-  name: string;
-  jersey_number: string;
-  jersey_confidence: number;
-  position_x: number;
-}
-
-interface MergedAthlete {
+interface ClaudeAthlete {
   name: string;
   face_confidence: number | null;
   jersey_confidence: number | null;
+  match_type: string;
   position_x: number;
-  match_type: 'face' | 'jersey' | 'both';
 }
 
 interface RosterAthlete {
@@ -46,98 +33,24 @@ interface RosterAthlete {
   headshot_url: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Base URL for internal function-to-function calls. */
-function internalBaseUrl(): string {
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'http://localhost:3000';
-}
-
-async function callClaudeJerseys(
-  sport: string,
-  rosterLines: string,
-  photoBase64: string
-): Promise<JerseyMatch[]> {
-  type Block = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg'; data: string } };
-
-  const content: Block[] = [
-    {
-      type: 'text',
-      text: `You are reading jersey numbers from a sports photograph.
-
-The sport is: ${sport}
-
-Here is the team roster (name: jersey number):
-${rosterLines}
-
-Look at this event photo and identify any athletes you can match by their jersey number.
-For each jersey number you can clearly read:
-- Match it to an athlete in the roster above
-- Estimate the athlete's horizontal position in the frame (0 = far left, 1 = far right)
-- Rate your confidence in the jersey number reading (0–1)
-
-Return JSON only, in this exact format:
-{
-  "jerseys": [
-    {
-      "name": "Athlete Name",
-      "jersey_number": "23",
-      "jersey_confidence": 0.92,
-      "position_x": 0.4
-    }
-  ]
-}
-
-Only include athletes where you can clearly read a jersey number.
-Do not guess. If no jersey numbers are readable, return: { "jerseys": [] }`,
-    },
-    {
-      type: 'image',
-      source: { type: 'base64', media_type: 'image/jpeg', data: photoBase64 },
-    },
-  ];
-
+async function callClaude(content: ContentBlock[]): Promise<string> {
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
+    max_tokens: 2048,
     messages: [{ role: 'user', content }],
   });
-
   const block = response.content[0];
-  if (block.type !== 'text') return [];
-
-  try {
-    const jsonMatch = block.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return [];
-    const parsed = JSON.parse(jsonMatch[0]);
-    return (parsed.jerseys ?? []) as JerseyMatch[];
-  } catch {
-    return [];
-  }
+  if (block.type !== 'text') throw new Error('Unexpected Claude response type');
+  return block.text;
 }
 
-async function callClaudeJerseysWithRetry(
-  sport: string,
-  rosterLines: string,
-  photoBase64: string
-): Promise<JerseyMatch[]> {
+async function callClaudeWithRetry(content: ContentBlock[]): Promise<string> {
   try {
-    return await callClaudeJerseys(sport, rosterLines, photoBase64);
+    return await callClaude(content);
   } catch {
-    try {
-      return await callClaudeJerseys(sport, rosterLines, photoBase64);
-    } catch {
-      return [];
-    }
+    return await callClaude(content);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Main handler
-// ---------------------------------------------------------------------------
 
 export async function POST(
   request: NextRequest,
@@ -206,105 +119,108 @@ export async function POST(
 
   const rosterAthletes: RosterAthlete[] = athletes ?? [];
 
-  // 4. Download + resize headshots (small, for face-match payload size)
+  // 4. Download headshots in parallel
   const headshotData = await Promise.all(
     rosterAthletes.map(async (athlete) => {
-      if (!athlete.headshot_url) return { name: athlete.name, headshot_base64: null };
-      const { data: blob } = await supabase.storage
-        .from('rosters')
-        .download(athlete.headshot_url);
-      if (!blob) return { name: athlete.name, headshot_base64: null };
-      // Resize to max 480px on longest edge — preserves full face, keeps payload small.
-      // fit:'inside' never crops; portrait headshots (very common) are kept intact.
+      if (!athlete.headshot_url) return { athlete, base64: null };
+      const { data: blob } = await supabase.storage.from('rosters').download(athlete.headshot_url);
+      if (!blob) return { athlete, base64: null };
       const buf = Buffer.from(await blob.arrayBuffer());
-      const small = await sharp(buf)
-        .resize(480, 480, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 85 })
-        .toBuffer()
-        .catch(() => buf);
-      return { name: athlete.name, headshot_base64: small.toString('base64') };
+      return { athlete, base64: buf.toString('base64') };
     })
   );
 
-  const photoBase64 = resizedBuffer.toString('base64');
+  // 5. Build Claude Vision prompt
+  const content: ContentBlock[] = [
+    {
+      type: 'text',
+      text: `You are identifying college athletes in a sports photograph.
 
-  // 5. Call Python face-match function
-  let faceMatches: FaceMatch[] = [];
-  try {
-    const faceResp = await fetch(`${internalBaseUrl()}/api/face-match`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ photo_base64: photoBase64, athletes: headshotData }),
-      // Allow up to 120s — buffalo_s model download (~67 MB) can take 60-90s on cold start
-      signal: AbortSignal.timeout(120_000),
-    });
-    const faceData = await faceResp.json();
-    faceMatches = (faceData.matches ?? []) as FaceMatch[];
-  } catch (err) {
-    // Face matching unavailable — log and continue with jersey-only
-    console.warn('[process] face-match call failed:', err instanceof Error ? err.message : err);
+The sport is: ${sport}
+Jersey numbers are relevant for this sport: ${has_jersey_numbers}
+
+Below are the roster headshots for all athletes on the team.
+Each image is labeled with the athlete's name and jersey number (if applicable).
+Study each face carefully — you will need to match them to athletes in the event photo.
+`,
+    },
+  ];
+
+  for (const { athlete, base64 } of headshotData) {
+    if (!base64) continue;
+    const label = athlete.jersey_number
+      ? `${athlete.name} (Jersey #${athlete.jersey_number}):`
+      : `${athlete.name}:`;
+    content.push({ type: 'text', text: label });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } });
   }
 
-  // 6. Call Claude for jersey numbers (only when jersey numbers are relevant)
-  let jerseyMatches: JerseyMatch[] = [];
-  if (has_jersey_numbers) {
-    const rosterLines = rosterAthletes
-      .filter((a) => a.jersey_number)
-      .map((a) => `- ${a.name}: #${a.jersey_number}`)
-      .join('\n');
+  content.push({ type: 'text', text: 'Now analyze this event photo:' });
+  content.push({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/jpeg', data: resizedBuffer.toString('base64') },
+  });
+  content.push({
+    type: 'text',
+    text: `Identify all athletes visible in the photo. For each athlete:
+1. Compare faces in the event photo against the roster headshots above
+2. If jersey numbers are relevant, read the jersey number and match it to the roster
+3. Note their horizontal position in the frame (for left-to-right ordering)
 
-    if (rosterLines) {
-      jerseyMatches = await callClaudeJerseysWithRetry(sport, rosterLines, photoBase64);
+Return JSON only, in this exact format:
+{
+  "athletes": [
+    {
+      "name": "Athlete Name",
+      "face_confidence": 0.92,
+      "jersey_confidence": 0.88,
+      "match_type": "both",
+      "position_x": 0.3
     }
-  }
+  ]
+}
 
-  // 7. Merge face matches + jersey matches per athlete
-  const athleteMap: Record<string, MergedAthlete> = {};
+Only include athletes you can match to the roster with reasonable confidence.
+Do not include opponent athletes.
+If no athletes can be identified, return: { "athletes": [] }`,
+  });
 
-  for (const fm of faceMatches) {
-    athleteMap[fm.name] = {
-      name: fm.name,
-      face_confidence: fm.face_confidence,
-      jersey_confidence: null,
-      position_x: fm.position_x,
-      match_type: 'face',
-    };
-  }
-
-  for (const jm of jerseyMatches) {
-    if (athleteMap[jm.name]) {
-      // Combine: use face bbox position (more precise), add jersey confidence
-      athleteMap[jm.name].jersey_confidence = jm.jersey_confidence;
-      athleteMap[jm.name].match_type = 'both';
-    } else {
-      athleteMap[jm.name] = {
-        name: jm.name,
-        face_confidence: null,
-        jersey_confidence: jm.jersey_confidence,
-        position_x: jm.position_x,
-        match_type: 'jersey',
-      };
-    }
-  }
-
-  // 8. Filter to athletes meeting confidence threshold (face OR jersey)
-  const allAthletes = Object.values(athleteMap);
-  const matched = allAthletes.filter(
-    (a) =>
-      (a.face_confidence ?? 0) >= confidence_threshold ||
-      (a.jersey_confidence ?? 0) >= confidence_threshold
-  );
-
+  // 6. Call Claude with one automatic retry
   const processedPath = `photos-processed/${session_id}/${filename}`;
 
-  // Generate thumbnail signed URL (original — always available)
+  let claudeText: string;
+  try {
+    claudeText = await callClaudeWithRetry(content);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Claude API error';
+    await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
+    await supabase.from('photos').update({ status: 'error', error_message: msg, processed_path: processedPath }).eq('id', id);
+    const { data: thumb } = await supabase.storage.from('photos-original').createSignedUrl(storage_path, 3600);
+    return NextResponse.json({ status: 'error', filename, thumbnail_url: thumb?.signedUrl ?? null });
+  }
+
+  // 7. Parse response
+  let parsed: { athletes: ClaudeAthlete[] } = { athletes: [] };
+  try {
+    const jsonMatch = claudeText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    // stay with empty athletes
+  }
+
+  const rawAthletes: ClaudeAthlete[] = parsed.athletes ?? [];
+
+  // 8. Filter to athletes meeting confidence threshold (face OR jersey)
+  const matched = rawAthletes.filter(
+    (a) => (a.face_confidence ?? 0) >= confidence_threshold || (a.jersey_confidence ?? 0) >= confidence_threshold
+  );
+
   const { data: thumbData } = await supabase.storage
     .from('photos-original')
     .createSignedUrl(storage_path, 3600);
   const thumbnailUrl = thumbData?.signedUrl ?? null;
 
   if (matched.length > 0) {
-    // Sort matched athletes left-to-right
     matched.sort((a, b) => a.position_x - b.position_x);
     const matchedNames = matched.map((a) => a.name);
 
@@ -314,7 +230,6 @@ export async function POST(
     const hasJersey = matched.some((a) => (a.jersey_confidence ?? 0) >= confidence_threshold);
     const matchType = hasFace && hasJersey ? 'both' : hasFace ? 'face' : 'jersey';
 
-    // Write XMP metadata
     let processedBuffer: Buffer;
     try {
       processedBuffer = await writeAthleteNames(originalBuffer, matchedNames);

@@ -1,8 +1,0 @@
-# Python dependencies for Vercel Python Functions (api/*.py)
-# insightface + onnxruntime were ~445 MB installed — too large for the 500 MB Lambda limit.
-# face_recognition + dlib achieve the same task at ~235 MB total.
-
-face_recognition==1.3.0
-dlib==19.24.2
-numpy==1.26.4
-Pillow==10.3.0
