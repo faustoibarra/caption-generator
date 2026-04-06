@@ -3,6 +3,7 @@ import { DOMParser, XMLSerializer, Document, Element } from '@xmldom/xmldom';
 const XMP_NAMESPACE = 'http://ns.adobe.com/xap/1.0/\0';
 const DC_NS = 'http://purl.org/dc/elements/1.1/';
 const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+const IPTC_EXT_NS = 'http://iptc.org/std/Iptc4xmpExt/2008-02-29/';
 
 /**
  * Writes athlete names into the XMP metadata of a JPEG buffer.
@@ -45,6 +46,7 @@ export async function writeAthleteNames(
 
   updateDcDescription(doc, nameString);
   updateDcTitle(doc, nameString);
+  updatePersonInImage(doc, names);
 
   // --- 4. Serialize back ---
   const serializer = new XMLSerializer();
@@ -184,6 +186,39 @@ function updateDcDescription(doc: Document, nameString: string): void {
     }
   }
   // "enter_caption_here" not found — leave dc:description unchanged per spec
+}
+
+/**
+ * Writes athlete names to Iptc4xmpExt:PersonInImage — the field Photo Mechanic
+ * labels "Personality". Each athlete gets a separate rdf:li in an rdf:Bag.
+ * Replaces any existing PersonInImage value entirely.
+ */
+function updatePersonInImage(doc: Document, names: string[]): void {
+  const rdfDescs = doc.getElementsByTagNameNS(RDF_NS, 'Description');
+  if (rdfDescs.length === 0) return;
+  const rdfDesc = rdfDescs[0];
+
+  // Ensure the namespace is declared on the rdf:Description element
+  if (!rdfDesc.getAttributeNS('http://www.w3.org/2000/xmlns/', 'Iptc4xmpExt')) {
+    rdfDesc.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:Iptc4xmpExt', IPTC_EXT_NS);
+  }
+
+  // Remove existing PersonInImage if present
+  const existing = doc.getElementsByTagNameNS(IPTC_EXT_NS, 'PersonInImage');
+  for (let i = existing.length - 1; i >= 0; i--) {
+    existing[i].parentNode?.removeChild(existing[i]);
+  }
+
+  // Build <Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Name</rdf:li>...</rdf:Bag></Iptc4xmpExt:PersonInImage>
+  const personEl = doc.createElementNS(IPTC_EXT_NS, 'Iptc4xmpExt:PersonInImage');
+  const bag = doc.createElementNS(RDF_NS, 'rdf:Bag');
+  for (const name of names) {
+    const li = doc.createElementNS(RDF_NS, 'rdf:li');
+    li.appendChild(doc.createTextNode(name));
+    bag.appendChild(li);
+  }
+  personEl.appendChild(bag);
+  rdfDesc.appendChild(personEl);
 }
 
 function updateDcTitle(doc: Document, nameString: string): void {
