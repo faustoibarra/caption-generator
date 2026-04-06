@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const rosterUrl = req.nextUrl.searchParams.get('roster_url');
+  console.log(`[check-roster] called url=${rosterUrl}`);
   if (!rosterUrl) {
     return NextResponse.json({ ok: false, error: 'roster_url is required' }, { status: 400 });
   }
