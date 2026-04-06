@@ -46,6 +46,8 @@ export async function scrapeRoster(
   hasJerseyNumbers: boolean,
 ): Promise<AthleteResult[]> {
   const t0 = Date.now();
+  // Normalize so check-roster can match it reliably
+  rosterUrl = rosterUrl.trim().replace(/\/+$/, '');
   console.log(`[scrape-roster] START  url=${rosterUrl} session=${sessionId}`);
 
   // Fetch raw HTML

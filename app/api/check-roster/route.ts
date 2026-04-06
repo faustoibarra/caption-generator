@@ -10,13 +10,18 @@ export async function GET(req: NextRequest) {
   try {
     const supabase = createServiceClient();
 
+    // Normalize URL: trim whitespace and trailing slashes so minor variations still match
+    const normalizedUrl = rosterUrl.trim().replace(/\/+$/, '');
+
     // Find the most recent session_id for this roster URL
     const { data: rows, error } = await supabase
       .from('roster_athletes')
       .select('id, session_id, name, jersey_number, headshot_url')
-      .eq('roster_url', rosterUrl)
+      .eq('roster_url', normalizedUrl)
       .order('created_at', { ascending: false })
       .limit(200);
+
+    console.log(`[check-roster] url=${normalizedUrl} rows=${rows?.length ?? 0} err=${error?.message ?? 'none'}`);
 
     if (error) throw new Error(error.message);
     if (!rows || rows.length === 0) {
