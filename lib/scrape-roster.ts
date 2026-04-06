@@ -102,8 +102,8 @@ export async function scrapeRoster(
       ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
       : strippedHtml;
 
-  // Structured data cap: 200 KB when it's the primary source, 60 KB otherwise
-  const TOTAL_STRUCTURED_CAP = hasStructuredData ? 200_000 : 60_000;
+  // Structured data cap: 400 KB when it's the primary source, 60 KB otherwise
+  const TOTAL_STRUCTURED_CAP = hasStructuredData ? 400_000 : 60_000;
   let structuredDataForPrompt = '';
   let structuredCharsUsed = 0;
   for (let i = 0; i < structuredData.length; i++) {
