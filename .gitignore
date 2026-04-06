@@ -1,0 +1,22 @@
+# dependencies
+/node_modules
+
+# Next.js
+/.next/
+/out/
+
+# production
+/build
+
+# env files — copy .env.local.example to .env.local and fill in values
+.env.local
+.env.*.local
+
+# Supabase
+/supabase/.branches
+/supabase/.temp
+
+# misc
+.DS_Store
+*.pem
+.vercel

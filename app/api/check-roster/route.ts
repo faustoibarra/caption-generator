@@ -1,0 +1,56 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServiceClient } from '@/lib/supabase/server';
+
+export async function GET(req: NextRequest) {
+  const rosterUrl = req.nextUrl.searchParams.get('roster_url');
+  if (!rosterUrl) {
+    return NextResponse.json({ ok: false, error: 'roster_url is required' }, { status: 400 });
+  }
+
+  try {
+    const supabase = createServiceClient();
+
+    // Find the most recent session_id for this roster URL
+    const { data: rows, error } = await supabase
+      .from('roster_athletes')
+      .select('id, session_id, name, jersey_number, headshot_url')
+      .eq('roster_url', rosterUrl)
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (error) throw new Error(error.message);
+    if (!rows || rows.length === 0) {
+      return NextResponse.json({ ok: true, exists: false });
+    }
+
+    // All rows from the most recent session
+    const sessionId = rows[0].session_id;
+    const sessionRows = rows.filter((r) => r.session_id === sessionId);
+
+    // Generate signed URLs for headshots
+    const athletes = await Promise.all(
+      sessionRows.map(async (row) => {
+        let signedUrl: string | null = null;
+        if (row.headshot_url) {
+          const { data: signed } = await supabase.storage
+            .from('rosters')
+            .createSignedUrl(row.headshot_url, 3600);
+          signedUrl = signed?.signedUrl ?? null;
+        }
+        return {
+          id: row.id,
+          name: row.name,
+          jersey_number: row.jersey_number ?? null,
+          headshot_url: signedUrl,
+        };
+      })
+    );
+
+    return NextResponse.json({ ok: true, exists: true, session_id: sessionId, athletes });
+  } catch (err) {
+    return NextResponse.json(
+      { ok: false, error: err instanceof Error ? err.message : 'Unknown error' },
+      { status: 500 }
+    );
+  }
+}

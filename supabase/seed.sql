@@ -1,0 +1,3 @@
+-- seed.sql — dev only, no data needed for schema-only scaffold
+-- Tables and buckets are created via migrations.
+-- Add test data here when needed for local development.

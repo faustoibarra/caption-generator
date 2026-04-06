@@ -1,0 +1,247 @@
+'use client';
+
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useJobStore } from '@/lib/store';
+import type { Athlete } from '@/lib/store';
+
+export function SetupForm() {
+  const { setSetup, startScraping, setAthletes, setRosterReady, setUploading, setError } = useJobStore();
+
+  const [jobName, setJobName] = useState('');
+  const [rosterUrl, setRosterUrl] = useState('');
+  const [sport, setSport] = useState('');
+  const [hasJerseyNumbers, setHasJerseyNumbers] = useState(false);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.4);
+  const [submitting, setSubmitting] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  // Existing-roster prompt state
+  const [existingRoster, setExistingRoster] = useState<{
+    sessionId: string;
+    athletes: Athlete[];
+  } | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setValidationError(null);
+
+    if (!jobName.trim() || !rosterUrl.trim() || !sport.trim()) {
+      setValidationError('All text fields are required.');
+      return;
+    }
+    if (!rosterUrl.startsWith('http')) {
+      setValidationError('Roster URL must start with http.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // Check if a roster already exists for this URL
+      const checkRes = await fetch(
+        `/api/check-roster?roster_url=${encodeURIComponent(rosterUrl)}`
+      );
+      const checkData = await checkRes.json();
+      if (!checkData.ok) throw new Error(checkData.error || 'Failed to check existing roster.');
+
+      if (checkData.exists) {
+        // Show existing roster and ask the user
+        setExistingRoster({ sessionId: checkData.session_id, athletes: checkData.athletes });
+        return;
+      }
+
+      // No existing roster — go straight to scraping
+      await scrapeAndContinue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function scrapeAndContinue() {
+    const sessionId = crypto.randomUUID();
+    setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, confidenceThreshold, sessionId });
+    startScraping();
+    setSubmitting(true);
+
+    try {
+      const res = await fetch('/api/scrape-roster', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          roster_url: rosterUrl,
+          sport,
+          has_jersey_numbers: hasJerseyNumbers,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || `Server error: ${res.status}`);
+      setAthletes(data.athletes);
+      setRosterReady();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error during roster scraping.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function useExistingRoster() {
+    if (!existingRoster) return;
+    setSetup({
+      jobName,
+      rosterUrl,
+      sport,
+      hasJerseyNumbers,
+      confidenceThreshold,
+      sessionId: existingRoster.sessionId,
+    });
+    setAthletes(existingRoster.athletes);
+    setUploading();
+  }
+
+  async function handleReload() {
+    setExistingRoster(null);
+    setSubmitting(true);
+    try {
+      await scrapeAndContinue();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // ── Existing-roster confirmation panel ──────────────────────────────────────
+  if (existingRoster) {
+    return (
+      <main className="min-h-screen p-8 max-w-5xl mx-auto">
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold">Roster already loaded</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Found {existingRoster.athletes.length} athlete
+            {existingRoster.athletes.length !== 1 ? 's' : ''} from a previous scrape of this URL.
+            Use the existing roster or reload it fresh from the site.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8">
+          {existingRoster.athletes.map((athlete) => (
+            <div
+              key={athlete.id}
+              className="flex flex-col items-center gap-2 rounded-lg border bg-card p-3 text-center"
+            >
+              {athlete.headshot_url ? (
+                <img
+                  src={athlete.headshot_url}
+                  alt={athlete.name}
+                  className="h-20 w-20 rounded-full object-cover bg-muted"
+                />
+              ) : (
+                <div className="h-20 w-20 rounded-full bg-muted flex items-center justify-center text-muted-foreground text-2xl select-none">
+                  {athlete.name.charAt(0)}
+                </div>
+              )}
+              <p className="text-xs font-medium leading-tight">{athlete.name}</p>
+              {hasJerseyNumbers && athlete.jersey_number && (
+                <span className="text-xs text-muted-foreground">#{athlete.jersey_number}</span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <Button variant="outline" onClick={handleReload} disabled={submitting}>
+            Reload from site
+          </Button>
+          <Button onClick={useExistingRoster}>
+            Use existing roster → Upload Photos
+          </Button>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Setup form ───────────────────────────────────────────────────────────────
+  return (
+    <main className="min-h-screen flex items-center justify-center p-6">
+      <Card className="w-full max-w-lg">
+        <CardHeader>
+          <CardTitle className="text-2xl">Caption Generator</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div className="space-y-1.5">
+              <Label htmlFor="jobName">Job Name</Label>
+              <Input
+                id="jobName"
+                placeholder="Stanford Field Hockey 2025-03-15"
+                value={jobName}
+                onChange={(e) => setJobName(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="sport">Sport</Label>
+              <Input
+                id="sport"
+                placeholder="Field Hockey"
+                value={sport}
+                onChange={(e) => setSport(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="rosterUrl">Roster URL</Label>
+              <Input
+                id="rosterUrl"
+                type="url"
+                placeholder="https://..."
+                value={rosterUrl}
+                onChange={(e) => setRosterUrl(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="hasJerseyNumbers"
+                checked={hasJerseyNumbers}
+                onCheckedChange={(checked) => setHasJerseyNumbers(checked === true)}
+              />
+              <Label htmlFor="hasJerseyNumbers" className="cursor-pointer">
+                Has Jersey Numbers
+              </Label>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="confidenceThreshold">Confidence Threshold</Label>
+              <Input
+                id="confidenceThreshold"
+                type="number"
+                min={0.2}
+                max={1.0}
+                step={0.05}
+                value={confidenceThreshold}
+                onChange={(e) => setConfidenceThreshold(parseFloat(e.target.value))}
+              />
+            </div>
+
+            {validationError && (
+              <p className="text-sm text-destructive">{validationError}</p>
+            )}
+
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting ? 'Checking…' : 'Start →'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </main>
+  );
+}

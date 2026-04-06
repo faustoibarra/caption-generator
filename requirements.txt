@@ -1,0 +1,8 @@
+# Python dependencies for Vercel Python Functions (api/*.py)
+# These are installed automatically by Vercel at build time.
+
+insightface==0.7.3
+onnxruntime==1.17.3
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+Pillow==10.3.0
