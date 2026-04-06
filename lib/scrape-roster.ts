@@ -77,23 +77,29 @@ export async function scrapeRoster(
 
   // Call Claude to extract athletes
   const t2 = Date.now();
-  // Cap each block at 300 KB to stay within Claude's context window.
-  // The Nuxt devalue block on gostanford.com is ~120 KB — well within this limit.
-  const BLOCK_CAP = 300_000;
-  const structuredDataForPrompt = structuredData
-    .map((b, i) => `--- Embedded JSON block ${i + 1} (${b.length} chars) ---\n${b.slice(0, BLOCK_CAP)}`)
-    .join('\n');
 
-  // Cap stripped HTML at 200 KB — enough for any roster page; beyond this is mostly boilerplate
-  const HTML_CAP = 200_000;
+  // Hard cap on stripped HTML — 60 KB is enough to cover any roster page layout
+  const HTML_CAP = 60_000;
   const cappedHtml = strippedHtml.length > HTML_CAP
     ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
     : strippedHtml;
 
-  console.log(`[scrape-roster] Calling Claude  stripped_chars=${strippedHtml.length}  capped_chars=${cappedHtml.length}  structured_chars=${structuredData.reduce((s, b) => s + Math.min(b.length, BLOCK_CAP), 0)}`);
+  // Cap total structured data at 60 KB across all blocks combined
+  const TOTAL_STRUCTURED_CAP = 60_000;
+  let structuredDataForPrompt = '';
+  let structuredCharsUsed = 0;
+  for (let i = 0; i < structuredData.length; i++) {
+    const remaining = TOTAL_STRUCTURED_CAP - structuredCharsUsed;
+    if (remaining <= 0) break;
+    const chunk = structuredData[i].slice(0, remaining);
+    structuredDataForPrompt += `--- Embedded JSON block ${i + 1} ---\n${chunk}\n`;
+    structuredCharsUsed += chunk.length;
+  }
+
+  console.log(`[scrape-roster] Calling Claude  html_chars=${cappedHtml.length}  structured_chars=${structuredCharsUsed}`);
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
+    max_tokens: 8192,
     messages: [
       {
         role: 'user',
@@ -104,7 +110,7 @@ Here is the stripped HTML of the roster page (scripts and styles removed):
 ${cappedHtml}
 </html>
 ${structuredData.length > 0 ? `
-The following is the complete embedded JSON state from the page (Nuxt/Vue SSR devalue format).
+The following is embedded JSON state from the page (Nuxt/Vue SSR devalue format).
 It is a flat array where integer values are indices referencing other elements in the array.
 The athlete names and their headshot URLs are both stored as plain strings within this array.
 Find the section containing player/roster data and extract each athlete's name and headshot URL.
@@ -117,7 +123,7 @@ Extract all athletes and return a JSON array. For each athlete include:
 - jersey_number: jersey number as a string, or null if not shown or not applicable
 - headshot_url: the absolute URL to their headshot image found in the structured data above, or null if not found
 
-Return only valid JSON. Example:
+Return only valid JSON with no commentary. Example:
 [
   { "name": "Daria Gusarova", "jersey_number": null, "headshot_url": "https://..." },
   { "name": "Emmy Sharp", "jersey_number": "12", "headshot_url": "https://..." }
@@ -125,17 +131,24 @@ Return only valid JSON. Example:
       },
     ],
   });
-  console.log(`[scrape-roster] Claude API done  input_tokens=${message.usage.input_tokens} output_tokens=${message.usage.output_tokens}  time=${elapsed(t2)}`);
+  console.log(`[scrape-roster] Claude API done  input_tokens=${message.usage.input_tokens} output_tokens=${message.usage.output_tokens} stop_reason=${message.stop_reason}  time=${elapsed(t2)}`);
 
   // Parse response
   const block = message.content[0];
   if (block.type !== 'text') throw new Error('Unexpected Claude response type');
 
+  // If output was truncated, attempt to salvage the partial JSON by closing the array
+  let responseText = block.text.trim();
+  if (message.stop_reason === 'max_tokens') {
+    console.warn('[scrape-roster] Output truncated at max_tokens — attempting partial parse');
+    // Find the last complete object and close the array
+    const lastBrace = responseText.lastIndexOf('}');
+    if (lastBrace !== -1) responseText = responseText.slice(0, lastBrace + 1) + ']';
+  }
+
   let rawAthletes: Array<{ name: string; jersey_number: string | null; headshot_url: string | null }>;
   try {
-    const text = block.text.trim();
-    // Strip markdown fences if present
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
     if (!jsonMatch) throw new Error('No JSON array found in response');
     rawAthletes = JSON.parse(jsonMatch[0]);
   } catch {
