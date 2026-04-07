@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import * as cheerio from 'cheerio';
 import { createServiceClient } from '@/lib/supabase/server';
 
 const anthropic = new Anthropic({
@@ -15,6 +16,147 @@ export interface AthleteResult {
 
 function elapsed(start: number) {
   return `${((Date.now() - start) / 1000).toFixed(2)}s`;
+}
+
+type RawAthlete = { name: string; jersey_number: string | null; headshot_url: string | null };
+
+/**
+ * Parse Sidearm Sports / Nuxt SSR pages that embed roster data as a flat devalue array
+ * in a <script id="__NUXT_DATA__"> tag.  All integer values in objects are index
+ * references into the flat array; resolve one level for primitives, two for photos.
+ *
+ * Returns null if the page doesn't use this format.
+ */
+function tryParseSidarmNuxt(html: string): RawAthlete[] | null {
+  const m = html.match(/<script[^>]+id="__NUXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  if (!m) return null;
+
+  let flat: unknown[];
+  try {
+    flat = JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(flat) || flat.length < 10) return null;
+
+  const n = flat.length;
+  const res = (v: unknown): unknown => (typeof v === 'number' && v >= 0 && v < n ? flat[v] : v);
+
+  const athletes: RawAthlete[] = [];
+  const seenIds = new Set<unknown>();
+
+  for (const item of flat) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const obj = item as Record<string, unknown>;
+
+    // Player objects have both full_name and jersey_number.
+    // Skip roster_player wrapper objects (they have a player_id field linking to the real player).
+    if (!('full_name' in obj) || !('jersey_number' in obj) || 'player_id' in obj) continue;
+
+    const id = res(obj.id);
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    const name = res(obj.full_name);
+    if (typeof name !== 'string' || !name.trim()) continue;
+
+    // jersey_number_label is a pre-formatted string; prefer it over the raw number
+    const jlabelRaw = res(obj.jersey_number_label);
+    const jerseyRaw = res(obj.jersey_number);
+    const jersey =
+      typeof jlabelRaw === 'string' && jlabelRaw.trim()
+        ? jlabelRaw.trim()
+        : jerseyRaw != null
+          ? String(jerseyRaw)
+          : null;
+
+    // master_photo → { url, srcset }.  Prefer srcset (480px imgproxy variant).
+    let headshotUrl: string | null = null;
+    const photoObj = res(obj.master_photo);
+    if (typeof photoObj === 'object' && photoObj !== null && !Array.isArray(photoObj)) {
+      const photo = photoObj as Record<string, unknown>;
+      const srcset = res(photo.srcset);
+      if (typeof srcset === 'string' && srcset.startsWith('http')) {
+        headshotUrl = srcset.split(',')[0].trim().split(/\s+/)[0];
+      }
+      if (!headshotUrl) {
+        const url = res(photo.url);
+        if (typeof url === 'string' && url.startsWith('http')) headshotUrl = url;
+      }
+    }
+
+    athletes.push({ name: name.trim(), jersey_number: jersey, headshot_url: headshotUrl });
+  }
+
+  return athletes.length > 0 ? athletes : null;
+}
+
+/**
+ * CSS-selector scraping for common college-athletics HTML templates (non-Nuxt sites).
+ * Handles Sidearm HTML-rendered pages, Presto Sports, and generic roster grids.
+ *
+ * Returns null if no athletes are found so the caller can fall back to Claude.
+ */
+function tryParseHtml(html: string, baseUrl: string): RawAthlete[] | null {
+  const $ = cheerio.load(html);
+
+  // Resolve a potentially-relative URL to absolute
+  const abs = (src: string): string => {
+    if (!src) return '';
+    try { return new URL(src, baseUrl).href; } catch { return src; }
+  };
+
+  // Candidate selectors in priority order (most-specific first)
+  const CARD_SELECTORS = [
+    '.s-person-card',          // Sidearm card layout
+    '.roster-card',
+    '[class*="roster"] [class*="card"]',
+    '[class*="roster"] [class*="person"]',
+    '[class*="roster"] li',
+    'ul.roster li',
+    'table.roster tr',
+  ];
+
+  for (const sel of CARD_SELECTORS) {
+    const cards = $(sel).toArray();
+    if (cards.length < 3) continue; // not enough to be a real roster
+
+    const athletes: RawAthlete[] = [];
+    for (const card of cards) {
+      const $c = $(card);
+
+      // Name: prefer explicit name element, fall back to link text
+      const nameEl =
+        $c.find('[class*="name"]').first() ||
+        $c.find('h3,h4,h2').first() ||
+        $c.find('a').first();
+      const name = nameEl.text().trim();
+      if (!name || name.length < 3) continue;
+
+      // Jersey number
+      const numEl = $c.find('[class*="number"],[class*="jersey"],[class*="uni"]').first();
+      const jersey = numEl.text().replace(/[^0-9]/g, '') || null;
+
+      // Headshot: img src or data-src
+      const img = $c.find('img').first();
+      let headshotUrl =
+        abs(img.attr('src') ?? '') ||
+        abs(img.attr('data-src') ?? '') ||
+        abs(img.attr('data-lazy-src') ?? '');
+      if (headshotUrl && (headshotUrl.endsWith('.svg') || headshotUrl.includes('silhouette') || headshotUrl.includes('placeholder'))) {
+        headshotUrl = '';
+      }
+
+      athletes.push({ name, jersey_number: jersey, headshot_url: headshotUrl || null });
+    }
+
+    if (athletes.length >= 3) {
+      console.log(`[scrape-roster] CSS parse: selector="${sel}" athletes=${athletes.length}`);
+      return athletes;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -69,61 +211,64 @@ export async function scrapeRoster(
     throw new Error(`Failed to fetch roster URL: ${htmlRes.status} ${htmlRes.statusText}`);
   }
   const rosterHtml = await htmlRes.text();
-  const strippedHtml = stripHtml(rosterHtml);
+  console.log(`[scrape-roster] HTML fetch done  raw=${rosterHtml.length} chars  time=${elapsed(t1)}`);
 
-  // Nuxt/Vue SSR pages store athlete+photo data in embedded JSON <script> tags, not img attributes.
-  // Extract those blocks so Claude can see the structured data with photo URLs intact.
-  const jsonScriptBlocks = Array.from(
-    rosterHtml.matchAll(/<script[^>]+type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi)
-  ).map(m => m[1].trim());
-  // Also grab inline Nuxt state (window.__NUXT__ = {...} or similar)
-  const nuxtStateBlocks = Array.from(
-    rosterHtml.matchAll(/window\.__NUXT(?:_DATA)?__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/gi)
-  ).map(m => m[1]);
-
-  const structuredData = [...jsonScriptBlocks, ...nuxtStateBlocks];
-  const structuredDataSizes = structuredData.map(b => b.length);
-  console.log(`[scrape-roster] HTML fetch done  raw=${rosterHtml.length} chars  stripped=${strippedHtml.length} chars  structured_data_blocks=${structuredData.length}  block_sizes=${structuredDataSizes.join(',')}  time=${elapsed(t1)}`);
-
-  // Call Claude to extract athletes
+  // ── Tier 1: Sidearm Sports / Nuxt devalue (fast, no AI) ──────────────────
   const t2 = Date.now();
-
-  // When structured data (Nuxt/Vue SSR) is present, skip the stripped HTML entirely —
-  // gostanford.com pages have 60KB+ of nav/config boilerplate before player cards,
-  // so the HTML cap cuts off before any roster content is reached.
-  // Instead give Claude a larger chunk of the structured data which has all player info.
-  const hasStructuredData = structuredData.length > 0;
-
-  // HTML cap: small when structured data is available (just enough for context/sport name),
-  // larger when HTML is the only source.
-  const HTML_CAP = hasStructuredData ? 0 : 60_000;
-  const cappedHtml = HTML_CAP === 0
-    ? ''
-    : strippedHtml.length > HTML_CAP
-      ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
-      : strippedHtml;
-
-  // Structured data cap: 200 KB when it's the primary source, 60 KB otherwise
-  // (200KB was confirmed sufficient for the largest known roster; 400KB caused API timeouts)
-  const TOTAL_STRUCTURED_CAP = hasStructuredData ? 200_000 : 60_000;
-  let structuredDataForPrompt = '';
-  let structuredCharsUsed = 0;
-  for (let i = 0; i < structuredData.length; i++) {
-    const remaining = TOTAL_STRUCTURED_CAP - structuredCharsUsed;
-    if (remaining <= 0) break;
-    const chunk = structuredData[i].slice(0, remaining);
-    structuredDataForPrompt += `--- Embedded JSON block ${i + 1} ---\n${chunk}\n`;
-    structuredCharsUsed += chunk.length;
+  let rawAthletes: RawAthlete[] | null = tryParseSidarmNuxt(rosterHtml);
+  if (rawAthletes) {
+    console.log(`[scrape-roster] Tier1 devalue: ${rawAthletes.length} athletes  time=${elapsed(t2)}`);
   }
 
-  console.log(`[scrape-roster] Calling Claude  html_chars=${cappedHtml.length}  structured_chars=${structuredCharsUsed}  structured_data_primary=${hasStructuredData}`);
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 8192,
-    messages: [
-      {
-        role: 'user',
-        content: hasStructuredData ? `You are extracting athlete data from a sports team roster page.
+  // ── Tier 2: CSS selector parsing (fast, no AI) ────────────────────────────
+  if (!rawAthletes) {
+    rawAthletes = tryParseHtml(rosterHtml, rosterUrl);
+    if (rawAthletes) {
+      console.log(`[scrape-roster] Tier2 CSS: ${rawAthletes.length} athletes  time=${elapsed(t2)}`);
+    }
+  }
+
+  // ── Tier 3: Claude (fallback for unusual pages) ───────────────────────────
+  if (!rawAthletes) {
+    console.log(`[scrape-roster] Tier3 Claude fallback  time=${elapsed(t2)}`);
+    const strippedHtml = stripHtml(rosterHtml);
+
+    // Nuxt/Vue SSR pages store athlete+photo data in embedded JSON <script> tags.
+    const jsonScriptBlocks = Array.from(
+      rosterHtml.matchAll(/<script[^>]+type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi)
+    ).map(m => m[1].trim());
+    const nuxtStateBlocks = Array.from(
+      rosterHtml.matchAll(/window\.__NUXT(?:_DATA)?__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/gi)
+    ).map(m => m[1]);
+    const structuredData = [...jsonScriptBlocks, ...nuxtStateBlocks];
+    const hasStructuredData = structuredData.length > 0;
+
+    const HTML_CAP = hasStructuredData ? 0 : 60_000;
+    const cappedHtml = HTML_CAP === 0
+      ? ''
+      : strippedHtml.length > HTML_CAP
+        ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
+        : strippedHtml;
+
+    const TOTAL_STRUCTURED_CAP = hasStructuredData ? 200_000 : 60_000;
+    let structuredDataForPrompt = '';
+    let structuredCharsUsed = 0;
+    for (let i = 0; i < structuredData.length; i++) {
+      const remaining = TOTAL_STRUCTURED_CAP - structuredCharsUsed;
+      if (remaining <= 0) break;
+      const chunk = structuredData[i].slice(0, remaining);
+      structuredDataForPrompt += `--- Embedded JSON block ${i + 1} ---\n${chunk}\n`;
+      structuredCharsUsed += chunk.length;
+    }
+
+    console.log(`[scrape-roster] Calling Claude  html_chars=${cappedHtml.length}  structured_chars=${structuredCharsUsed}`);
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8192,
+      messages: [
+        {
+          role: 'user',
+          content: hasStructuredData ? `You are extracting athlete data from a sports team roster page.
 
 The following is embedded JSON state from the page (Nuxt/Vue SSR devalue format).
 It is a flat array where integer values are indices referencing other elements in the array.
@@ -159,33 +304,32 @@ Return only valid JSON with no commentary. Example:
   { "name": "Daria Gusarova", "jersey_number": null, "headshot_url": "https://..." },
   { "name": "Emmy Sharp", "jersey_number": "12", "headshot_url": "https://..." }
 ]`,
-      },
-    ],
-  });
-  console.log(`[scrape-roster] Claude API done  input_tokens=${message.usage.input_tokens} output_tokens=${message.usage.output_tokens} stop_reason=${message.stop_reason}  time=${elapsed(t2)}`);
+        },
+      ],
+    });
+    console.log(`[scrape-roster] Claude API done  input_tokens=${message.usage.input_tokens} output_tokens=${message.usage.output_tokens} stop_reason=${message.stop_reason}  time=${elapsed(t2)}`);
 
-  // Parse response
-  const block = message.content[0];
-  if (block.type !== 'text') throw new Error('Unexpected Claude response type');
+    const block = message.content[0];
+    if (block.type !== 'text') throw new Error('Unexpected Claude response type');
 
-  // If output was truncated, attempt to salvage the partial JSON by closing the array
-  let responseText = block.text.trim();
-  if (message.stop_reason === 'max_tokens') {
-    console.warn('[scrape-roster] Output truncated at max_tokens — attempting partial parse');
-    // Find the last complete object and close the array
-    const lastBrace = responseText.lastIndexOf('}');
-    if (lastBrace !== -1) responseText = responseText.slice(0, lastBrace + 1) + ']';
+    let responseText = block.text.trim();
+    if (message.stop_reason === 'max_tokens') {
+      console.warn('[scrape-roster] Output truncated at max_tokens — attempting partial parse');
+      const lastBrace = responseText.lastIndexOf('}');
+      if (lastBrace !== -1) responseText = responseText.slice(0, lastBrace + 1) + ']';
+    }
+
+    try {
+      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) throw new Error('No JSON array found in response');
+      rawAthletes = JSON.parse(jsonMatch[0]);
+    } catch {
+      throw new Error('Failed to parse Claude response as JSON');
+    }
   }
 
-  let rawAthletes: Array<{ name: string; jersey_number: string | null; headshot_url: string | null }>;
-  try {
-    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) throw new Error('No JSON array found in response');
-    rawAthletes = JSON.parse(jsonMatch[0]);
-  } catch {
-    throw new Error('Failed to parse Claude response as JSON');
-  }
-  console.log(`[scrape-roster] Parsed ${rawAthletes.length} athletes (${rawAthletes.filter(a => a.headshot_url).length} with headshots)`);
+  const athletes: RawAthlete[] = rawAthletes ?? [];
+  console.log(`[scrape-roster] Parsed ${athletes.length} athletes (${athletes.filter(a => a.headshot_url).length} with headshots)`);
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -213,7 +357,7 @@ Return only valid JSON with no commentary. Example:
   // Process all athletes in parallel — serial was the main timeout culprit
   const t3 = Date.now();
   const settled = await Promise.allSettled(
-    rawAthletes.map(async (raw, i) => {
+    athletes.map(async (raw, i) => {
       const ta = Date.now();
       const athleteId = crypto.randomUUID();
       let storagePath: string | null = null;
@@ -236,18 +380,18 @@ Return only valid JSON with no commentary. Example:
             const uploadMs = Date.now() - tu;
             if (!uploadError) {
               storagePath = storageKey;
-              console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  download=${downloadMs}ms  upload=${uploadMs}ms  size=${imgBuffer.length}B`);
+              console.log(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  download=${downloadMs}ms  upload=${uploadMs}ms  size=${imgBuffer.length}B`);
             } else {
-              console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  storage upload error: ${uploadError.message}`);
+              console.warn(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  storage upload error: ${uploadError.message}`);
             }
           } else {
-            console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  headshot fetch ${imgRes.status}  download=${downloadMs}ms`);
+            console.warn(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  headshot fetch ${imgRes.status}  download=${downloadMs}ms`);
           }
         } catch (err) {
-          console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  headshot exception: ${err instanceof Error ? err.message : err}`);
+          console.warn(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  headshot exception: ${err instanceof Error ? err.message : err}`);
         }
       } else {
-        console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  no headshot URL`);
+        console.log(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  no headshot URL`);
       }
 
       // Insert DB row
@@ -261,7 +405,7 @@ Return only valid JSON with no commentary. Example:
       });
 
       if (dbError) {
-        console.error(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  DB insert failed:`, JSON.stringify(dbError));
+        console.error(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  DB insert failed:`, JSON.stringify(dbError));
         throw new Error(dbError.message);
       }
 
@@ -274,7 +418,7 @@ Return only valid JSON with no commentary. Example:
         signedUrl = signed?.signedUrl ?? null;
       }
 
-      console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  done  time=${elapsed(ta)}`);
+      console.log(`[scrape-roster] [${i + 1}/${athletes.length}] ${raw.name}  done  time=${elapsed(ta)}`);
 
       return {
         id: athleteId,
@@ -291,7 +435,7 @@ Return only valid JSON with no commentary. Example:
     .filter((r): r is PromiseFulfilledResult<AthleteResult> => r.status === 'fulfilled')
     .map((r) => r.value);
 
-  console.log(`[scrape-roster] DONE  athletes=${results.length}/${rawAthletes.length}  total=${elapsed(t0)}`);
+  console.log(`[scrape-roster] DONE  athletes=${results.length}/${athletes.length}  total=${elapsed(t0)}`);
 
   return results;
 }
