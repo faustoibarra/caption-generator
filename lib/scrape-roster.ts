@@ -45,19 +45,35 @@ function tryParseSidarmNuxt(html: string): RawAthlete[] | null {
   const athletes: RawAthlete[] = [];
   const seenIds = new Set<unknown>();
 
+  const getPhotoUrl = (photoObj: unknown): string | null => {
+    if (typeof photoObj !== 'object' || photoObj === null || Array.isArray(photoObj)) return null;
+    const photo = photoObj as Record<string, unknown>;
+    const srcset = res(photo.srcset);
+    if (typeof srcset === 'string' && srcset.startsWith('http')) {
+      return srcset.split(',')[0].trim().split(/\s+/)[0];
+    }
+    const url = res(photo.url);
+    return typeof url === 'string' && url.startsWith('http') ? url : null;
+  };
+
   for (const item of flat) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
     const obj = item as Record<string, unknown>;
 
-    // Player objects have both full_name and jersey_number.
-    // Skip roster_player wrapper objects (they have a player_id field linking to the real player).
-    if (!('full_name' in obj) || !('jersey_number' in obj) || 'player_id' in obj) continue;
+    // Use roster_player wrapper objects (have player_id + jersey_number).
+    // These carry the roster-season photo in their `photo` field, which is populated
+    // even when the player's master_photo is null (e.g. newly added athletes).
+    if (!('player_id' in obj) || !('jersey_number' in obj)) continue;
 
     const id = res(obj.id);
     if (seenIds.has(id)) continue;
     seenIds.add(id);
 
-    const name = res(obj.full_name);
+    // Name comes from the nested player object
+    const playerObj = res(obj.player);
+    if (typeof playerObj !== 'object' || playerObj === null || Array.isArray(playerObj)) continue;
+    const player = playerObj as Record<string, unknown>;
+    const name = res(player.full_name);
     if (typeof name !== 'string' || !name.trim()) continue;
 
     // jersey_number_label is a pre-formatted string; prefer it over the raw number
@@ -70,20 +86,10 @@ function tryParseSidarmNuxt(html: string): RawAthlete[] | null {
           ? String(jerseyRaw)
           : null;
 
-    // master_photo → { url, srcset }.  Prefer srcset (480px imgproxy variant).
-    let headshotUrl: string | null = null;
-    const photoObj = res(obj.master_photo);
-    if (typeof photoObj === 'object' && photoObj !== null && !Array.isArray(photoObj)) {
-      const photo = photoObj as Record<string, unknown>;
-      const srcset = res(photo.srcset);
-      if (typeof srcset === 'string' && srcset.startsWith('http')) {
-        headshotUrl = srcset.split(',')[0].trim().split(/\s+/)[0];
-      }
-      if (!headshotUrl) {
-        const url = res(photo.url);
-        if (typeof url === 'string' && url.startsWith('http')) headshotUrl = url;
-      }
-    }
+    // Prefer wrapper's `photo` (roster-season upload); fall back to player's `master_photo`.
+    const headshotUrl =
+      getPhotoUrl(res(obj.photo)) ??
+      getPhotoUrl(res(player.master_photo));
 
     athletes.push({ name: name.trim(), jersey_number: jersey, headshot_url: headshotUrl });
   }
