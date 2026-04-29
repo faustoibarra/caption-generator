@@ -16,7 +16,7 @@ export function SetupForm() {
   const [rosterUrl, setRosterUrl] = useState('');
   const [sport, setSport] = useState('');
   const [hasJerseyNumbers, setHasJerseyNumbers] = useState(false);
-  const [recognitionEngine, setRecognitionEngine] = useState<'claude' | 'rekognition'>('claude');
+  const [recognitionEngine, setRecognitionEngine] = useState<'claude' | 'rekognition'>('rekognition');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.4);
   const [submitting, setSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -42,12 +42,6 @@ export function SetupForm() {
 
     setSubmitting(true);
     try {
-      // Rekognition mode always needs a fresh collection — skip the existing-roster check
-      if (recognitionEngine === 'rekognition') {
-        await scrapeAndContinue();
-        return;
-      }
-
       // Check if a roster already exists for this URL
       const checkRes = await fetch(
         `/api/check-roster?roster_url=${encodeURIComponent(rosterUrl)}`
@@ -100,7 +94,7 @@ export function SetupForm() {
     }
   }
 
-  function useExistingRoster() {
+  async function useExistingRoster() {
     if (!existingRoster) return;
     setSetup({
       jobName,
@@ -112,6 +106,23 @@ export function SetupForm() {
       sessionId: existingRoster.sessionId,
     });
     setAthletes(existingRoster.athletes);
+
+    if (recognitionEngine === 'rekognition') {
+      startScraping('Indexing faces from existing roster…');
+      try {
+        const res = await fetch('/api/rekognition-index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: existingRoster.sessionId }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Failed to index faces.');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Face indexing failed.');
+        return;
+      }
+    }
+
     setUploading();
   }
 

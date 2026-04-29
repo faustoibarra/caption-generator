@@ -40,6 +40,7 @@ interface JobStore {
   recognitionEngine: 'claude' | 'rekognition';
   confidenceThreshold: number;
   errorMessage: string | null;
+  scrapingMessage: string | null;
   athletes: Athlete[];
   uploadedPhotoIds: string[];
   currentBatchPhotoIds: string[];
@@ -56,7 +57,7 @@ interface JobStore {
     confidenceThreshold: number;
     sessionId: string;
   }) => void;
-  startScraping: () => void;
+  startScraping: (message?: string) => void;
   setAthletes: (athletes: Athlete[]) => void;
   setRosterReady: () => void;
   addUploadedPhoto: (id: string) => void;
@@ -77,9 +78,10 @@ const initialState = {
   rosterUrl: '',
   sport: '',
   hasJerseyNumbers: false,
-  recognitionEngine: 'claude' as 'claude' | 'rekognition',
+  recognitionEngine: 'rekognition' as 'claude' | 'rekognition',
   confidenceThreshold: 0.4,
   errorMessage: null,
+  scrapingMessage: null,
   athletes: [],
   uploadedPhotoIds: [],
   currentBatchPhotoIds: [],
@@ -103,7 +105,7 @@ export const useJobStore = create<JobStore>((set) => ({
       errorMessage: null,
     }),
 
-  startScraping: () => set({ state: 'scraping' }),
+  startScraping: (message) => set({ state: 'scraping', scrapingMessage: message ?? null }),
 
   setAthletes: (athletes) => set({ athletes }),
 
