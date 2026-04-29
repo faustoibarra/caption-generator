@@ -106,7 +106,10 @@ export async function POST(
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  const processedPath = `photos-processed/${session_id}/${filename}`;
+  // Derive processed path from the UUID-based storage_path to avoid invalid-key errors from
+  // filenames containing spaces or other special characters.
+  // storage_path = "photos-original/{session_id}/{uuid}.jpg"  →  swap bucket prefix only.
+  const processedPath = storage_path.replace(/^photos-original\//, 'photos-processed/');
 
   // Helper: upload original (unchanged) and mark status
   async function finishUnmatched() {
