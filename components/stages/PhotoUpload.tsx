@@ -34,13 +34,19 @@ async function uploadFile(
   const { photo_id, signed_url, thumbnail_url } = await urlRes.json() as { photo_id: string; signed_url: string; thumbnail_url: string | null };
 
   // Step 2: PUT the file directly to Supabase Storage — bypasses Vercel's 4.5MB body limit.
-  // Must use FormData matching @supabase/storage-js SDK behavior for signed-URL blob uploads:
-  // empty-string field key for the file + cacheControl field. Raw binary with Content-Type
-  // header causes 400 on this endpoint.
+  // Supabase's storage API proxy (Kong or the local router) requires the apikey header for routing
+  // even on signed-URL uploads. The SDK always sends this.headers (which contains apikey) — our
+  // raw XHR must do the same or the request is rejected with 400.
+  // Body format matches @supabase/storage-js: multipart FormData with cacheControl field and the
+  // file under an empty-string key.
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', signed_url);
     // Do NOT set Content-Type manually — FormData sets it with the correct multipart boundary.
+    xhr.setRequestHeader('apikey', supabaseAnonKey);
+    xhr.setRequestHeader('Authorization', `Bearer ${supabaseAnonKey}`);
+    xhr.setRequestHeader('x-upsert', 'false');
 
     const formData = new FormData();
     formData.append('cacheControl', '3600');
@@ -53,8 +59,13 @@ async function uploadFile(
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else {
+        const raw = xhr.responseText;
         let detail = '';
-        try { detail = ` — ${(JSON.parse(xhr.responseText) as { message?: string }).message ?? xhr.responseText}`; } catch { /* ignore */ }
+        if (raw) {
+          try { detail = ` — ${(JSON.parse(raw) as { message?: string }).message ?? raw}`; }
+          catch { detail = ` — ${raw}`; }
+        }
+        console.error('[upload] storage PUT failed', xhr.status, raw);
         reject(new Error(`Storage upload failed (${xhr.status})${detail}`));
       }
     });
