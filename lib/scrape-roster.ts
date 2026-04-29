@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { createServiceClient } from '@/lib/supabase/server';
+import { createCollection, indexFace } from '@/lib/rekognition';
 
 const anthropic = new Anthropic({
   timeout: 120_000,  // 2 min per attempt
@@ -54,6 +55,7 @@ export async function scrapeRoster(
   sport: string,
   hasJerseyNumbers: boolean,
   rescrape = false,
+  recognitionEngine: 'claude' | 'rekognition' = 'claude',
 ): Promise<AthleteResult[]> {
   const t0 = Date.now();
   // Normalize so check-roster can match it reliably
@@ -210,6 +212,13 @@ Return only valid JSON with no commentary. Example:
     }
   }
 
+  // If Rekognition mode, create the face collection before parallel headshot processing
+  if (recognitionEngine === 'rekognition') {
+    const tc = Date.now();
+    await createCollection(sessionId);
+    console.log(`[scrape-roster] Rekognition collection created  session=${sessionId}  time=${elapsed(tc)}`);
+  }
+
   // Process all athletes in parallel — serial was the main timeout culprit
   const t3 = Date.now();
   const settled = await Promise.allSettled(
@@ -237,6 +246,15 @@ Return only valid JSON with no commentary. Example:
             if (!uploadError) {
               storagePath = storageKey;
               console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  download=${downloadMs}ms  upload=${uploadMs}ms  size=${imgBuffer.length}B`);
+              if (recognitionEngine === 'rekognition') {
+                try {
+                  const ti = Date.now();
+                  const faceFound = await indexFace(sessionId, imgBuffer, athleteId);
+                  console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  rekognition index  face_found=${faceFound}  time=${Date.now() - ti}ms`);
+                } catch (rekErr) {
+                  console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  rekognition index error: ${rekErr instanceof Error ? rekErr.message : rekErr}`);
+                }
+              }
             } else {
               console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  storage upload error: ${uploadError.message}`);
             }

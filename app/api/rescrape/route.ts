@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { scrapeRoster } from '@/lib/scrape-roster';
 import { createServiceClient } from '@/lib/supabase/server';
+import { deleteCollection } from '@/lib/rekognition';
+
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
-    const { session_id, roster_url, sport, has_jersey_numbers } = await req.json();
+    const { session_id, roster_url, sport, has_jersey_numbers, recognition_engine } = await req.json();
     const supabase = createServiceClient();
 
     // Delete existing DB rows
@@ -25,8 +28,14 @@ export async function POST(req: NextRequest) {
       await supabase.storage.from('rosters').remove(paths);
     }
 
+    // If Rekognition mode, delete the existing collection before re-scraping
+    if (recognition_engine === 'rekognition') {
+      await deleteCollection(session_id);
+      console.log(`[rescrape] Deleted Rekognition collection  session=${session_id}`);
+    }
+
     // Re-run scraping
-    const athletes = await scrapeRoster(session_id, roster_url, sport, has_jersey_numbers);
+    const athletes = await scrapeRoster(session_id, roster_url, sport, has_jersey_numbers, false, recognition_engine ?? 'claude');
     return NextResponse.json({ ok: true, athletes });
   } catch (err) {
     return NextResponse.json(

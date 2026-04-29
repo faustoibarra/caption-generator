@@ -5,8 +5,8 @@ export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
-    const { session_id, roster_url, sport, has_jersey_numbers, rescrape } = await req.json();
-    const athletes = await scrapeRoster(session_id, roster_url, sport, has_jersey_numbers, rescrape ?? false);
+    const { session_id, roster_url, sport, has_jersey_numbers, rescrape, recognition_engine } = await req.json();
+    const athletes = await scrapeRoster(session_id, roster_url, sport, has_jersey_numbers, rescrape ?? false, recognition_engine ?? 'claude');
     return NextResponse.json({ ok: true, athletes });
   } catch (err) {
     return NextResponse.json(

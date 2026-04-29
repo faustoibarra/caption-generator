@@ -16,6 +16,7 @@ export function SetupForm() {
   const [rosterUrl, setRosterUrl] = useState('');
   const [sport, setSport] = useState('');
   const [hasJerseyNumbers, setHasJerseyNumbers] = useState(false);
+  const [recognitionEngine, setRecognitionEngine] = useState<'claude' | 'rekognition'>('claude');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.4);
   const [submitting, setSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -41,6 +42,12 @@ export function SetupForm() {
 
     setSubmitting(true);
     try {
+      // Rekognition mode always needs a fresh collection — skip the existing-roster check
+      if (recognitionEngine === 'rekognition') {
+        await scrapeAndContinue();
+        return;
+      }
+
       // Check if a roster already exists for this URL
       const checkRes = await fetch(
         `/api/check-roster?roster_url=${encodeURIComponent(rosterUrl)}`
@@ -65,7 +72,7 @@ export function SetupForm() {
 
   async function scrapeAndContinue(rescrape = false) {
     const sessionId = crypto.randomUUID();
-    setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, confidenceThreshold, sessionId });
+    setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, recognitionEngine, confidenceThreshold, sessionId });
     startScraping();
     setSubmitting(true);
 
@@ -78,6 +85,7 @@ export function SetupForm() {
           roster_url: rosterUrl,
           sport,
           has_jersey_numbers: hasJerseyNumbers,
+          recognition_engine: recognitionEngine,
           rescrape,
         }),
       });
@@ -99,6 +107,7 @@ export function SetupForm() {
       rosterUrl,
       sport,
       hasJerseyNumbers,
+      recognitionEngine,
       confidenceThreshold,
       sessionId: existingRoster.sessionId,
     });
@@ -209,16 +218,49 @@ export function SetupForm() {
               />
             </div>
 
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="hasJerseyNumbers"
-                checked={hasJerseyNumbers}
-                onCheckedChange={(checked) => setHasJerseyNumbers(checked === true)}
-              />
-              <Label htmlFor="hasJerseyNumbers" className="cursor-pointer">
-                Has Jersey Numbers
-              </Label>
+            <div className="space-y-1.5">
+              <Label>Recognition Engine</Label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="recognitionEngine"
+                    value="claude"
+                    checked={recognitionEngine === 'claude'}
+                    onChange={() => setRecognitionEngine('claude')}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Claude Vision</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="recognitionEngine"
+                    value="rekognition"
+                    checked={recognitionEngine === 'rekognition'}
+                    onChange={() => setRecognitionEngine('rekognition')}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">AWS Rekognition</span>
+                </label>
+              </div>
+              {recognitionEngine === 'rekognition' && (
+                <p className="text-xs text-muted-foreground">Face matching only — jersey number matching unavailable</p>
+              )}
             </div>
+
+            {recognitionEngine === 'claude' && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="hasJerseyNumbers"
+                  checked={hasJerseyNumbers}
+                  onCheckedChange={(checked) => setHasJerseyNumbers(checked === true)}
+                />
+                <Label htmlFor="hasJerseyNumbers" className="cursor-pointer">
+                  Has Jersey Numbers
+                </Label>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <Label htmlFor="confidenceThreshold">Confidence Threshold</Label>

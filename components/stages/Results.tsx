@@ -58,7 +58,7 @@ function bestConfidence(row: PhotoRow): number {
 }
 
 export function Results() {
-  const { sessionId, jobName, batchNumber, reset } = useJobStore();
+  const { sessionId, jobName, batchNumber, recognitionEngine, reset } = useJobStore();
 
   const [photos, setPhotos] = useState<PhotoRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -118,7 +118,7 @@ export function Results() {
       URL.revokeObjectURL(blobUrl);
 
       // 4. Clean up storage after successful download
-      await fetch(`/api/download?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      await fetch(`/api/download?session_id=${encodeURIComponent(sessionId)}&recognition_engine=${recognitionEngine}`, { method: 'DELETE' });
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Download failed');
     } finally {

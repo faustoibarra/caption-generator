@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
+import { deleteCollection } from '@/lib/rekognition';
 
 export const maxDuration = 60;
 
@@ -7,6 +8,7 @@ export const maxDuration = 60;
 // Cleans up all session files from storage and the DB.
 export async function DELETE(request: NextRequest) {
   const sessionId = request.nextUrl.searchParams.get('session_id');
+  const recognitionEngine = request.nextUrl.searchParams.get('recognition_engine');
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session_id' }, { status: 400 });
   }
@@ -38,6 +40,11 @@ export async function DELETE(request: NextRequest) {
     }
 
     await supabase.from('photos').delete().eq('session_id', sessionId);
+
+    if (recognitionEngine === 'rekognition') {
+      await deleteCollection(sessionId);
+      console.log(`[cleanup] Deleted Rekognition collection  session=${sessionId}`);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {

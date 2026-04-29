@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import sharp from 'sharp';
 import { createServiceClient } from '@/lib/supabase/server';
 import { writeAthleteNames } from '@/lib/xmp-writer';
+import { searchFacesByImage } from '@/lib/rekognition';
 
 export const maxDuration = 300;
 
@@ -19,6 +20,7 @@ interface ProcessBody {
   confidence_threshold: number;
   has_jersey_numbers: boolean;
   sport: string;
+  recognition_engine: 'claude' | 'rekognition';
 }
 
 interface ClaudeAthlete {
@@ -47,7 +49,6 @@ async function callClaude(content: ContentBlock[]): Promise<string> {
   return block.text;
 }
 
-
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -62,7 +63,7 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { confidence_threshold, has_jersey_numbers, sport } = body;
+  const { confidence_threshold, has_jersey_numbers, sport, recognition_engine } = body;
   const supabase = createServiceClient();
 
   // 1. Look up photo row
@@ -78,7 +79,7 @@ export async function POST(
   }
 
   const { session_id, storage_path, filename } = photo;
-  console.log(`[process] photo found file=${filename} storage=${storage_path}`);
+  console.log(`[process] photo found file=${filename} engine=${recognition_engine}`);
   await supabase.from('photos').update({ status: 'processing' }).eq('id', id);
 
   // 2. Download + resize original JPG
@@ -87,11 +88,9 @@ export async function POST(
     .download(storage_path);
 
   if (origErr || !origBlob) {
-    console.log(`[process] Download failed id=${id} err=${origErr?.message}`);
     await supabase.from('photos').update({ status: 'error', error_message: 'Failed to download original' }).eq('id', id);
     return NextResponse.json({ error: 'Failed to download original photo' }, { status: 500 });
   }
-  console.log(`[process] Downloaded original id=${id}`);
 
   const originalBuffer = Buffer.from(await origBlob.arrayBuffer());
 
@@ -106,6 +105,90 @@ export async function POST(
     await supabase.from('photos').update({ status: 'error', error_message: msg }).eq('id', id);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+
+  const processedPath = `photos-processed/${session_id}/${filename}`;
+
+  // Helper: upload original (unchanged) and mark status
+  async function finishUnmatched() {
+    await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
+    await supabase.from('photos').update({ status: 'unmatched', processed_path: processedPath }).eq('id', id);
+    const { data: thumb } = await supabase.storage.from('photos-original').createSignedUrl(storage_path, 3600);
+    return NextResponse.json({ status: 'unmatched', matched_names: null, face_confidence: null, jersey_confidence: null, match_type: null, filename, thumbnail_url: thumb?.signedUrl ?? null });
+  }
+
+  // Helper: write XMP, upload, update DB, return response
+  async function finishMatched(
+    matchedNames: string[],
+    faceConfidence: number | null,
+    jerseyConfidence: number | null,
+    matchType: string,
+  ) {
+    const { data: thumbData } = await supabase.storage.from('photos-original').createSignedUrl(storage_path, 3600);
+    const thumbnailUrl = thumbData?.signedUrl ?? null;
+
+    let processedBuffer: Buffer;
+    try {
+      processedBuffer = await writeAthleteNames(originalBuffer, matchedNames);
+    } catch (xmpErr) {
+      const isNoXmp = xmpErr instanceof Error && xmpErr.message === 'XMP segment not found';
+      const status = isNoXmp ? 'skipped' : 'error';
+      const error_message = isNoXmp ? undefined : (xmpErr instanceof Error ? xmpErr.message : 'XMP write failed');
+      await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
+      await supabase.from('photos').update({ status, ...(error_message ? { error_message } : {}), processed_path: processedPath }).eq('id', id);
+      return NextResponse.json({ status, filename, thumbnail_url: thumbnailUrl });
+    }
+
+    await supabase.storage.from('photos-processed').upload(processedPath, processedBuffer, { contentType: 'image/jpeg', upsert: true });
+    await supabase.from('photos').update({
+      status: 'matched',
+      matched_names: matchedNames,
+      face_confidence: faceConfidence,
+      jersey_confidence: jerseyConfidence,
+      match_type: matchType,
+      processed_path: processedPath,
+    }).eq('id', id);
+
+    return NextResponse.json({ status: 'matched', matched_names: matchedNames, face_confidence: faceConfidence, jersey_confidence: jerseyConfidence, match_type: matchType, filename, thumbnail_url: thumbnailUrl });
+  }
+
+  // ── Rekognition path ─────────────────────────────────────────────────────────
+  if (recognition_engine === 'rekognition') {
+    console.log(`[process] Calling Rekognition id=${id}`);
+    let matches;
+    try {
+      matches = await searchFacesByImage(session_id, resizedBuffer, confidence_threshold);
+      console.log(`[process] Rekognition done id=${id} matches=${matches.length}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Rekognition API error';
+      console.log(`[process] Rekognition error id=${id} msg=${msg}`);
+      await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
+      await supabase.from('photos').update({ status: 'error', error_message: msg, processed_path: processedPath }).eq('id', id);
+      const { data: thumb } = await supabase.storage.from('photos-original').createSignedUrl(storage_path, 3600);
+      return NextResponse.json({ status: 'error', filename, thumbnail_url: thumb?.signedUrl ?? null });
+    }
+
+    if (matches.length === 0) return finishUnmatched();
+
+    // Look up athlete names from DB (filter by session_id for safety)
+    const athleteIds = matches.map((m) => m.athleteId);
+    const { data: athleteRows } = await supabase
+      .from('roster_athletes')
+      .select('id, name')
+      .eq('session_id', session_id)
+      .in('id', athleteIds);
+
+    const sortedMatches = [...matches].sort((a, b) => a.boundingBoxLeft - b.boundingBoxLeft);
+    const matchedNames = sortedMatches
+      .map((m) => (athleteRows as { id: string; name: string }[] | null)?.find((a) => a.id === m.athleteId)?.name)
+      .filter((n): n is string => Boolean(n));
+
+    if (matchedNames.length === 0) return finishUnmatched();
+
+    const maxFaceConfidence = Math.max(...sortedMatches.map((m) => m.similarity));
+    return finishMatched(matchedNames, maxFaceConfidence, null, 'face');
+  }
+
+  // ── Claude path ──────────────────────────────────────────────────────────────
 
   // 3. Fetch roster athletes
   const { data: athletes, error: rosterErr } = await supabase
@@ -187,9 +270,7 @@ If no athletes can be identified, return: { "athletes": [] }`,
   });
 
   // 6. Call Claude
-  const processedPath = `photos-processed/${session_id}/${filename}`;
   console.log(`[process] Calling Claude id=${id} headshots=${headshotData.filter(h => h.base64).length}`);
-
   let claudeText: string;
   try {
     claudeText = await callClaude(content);
@@ -219,66 +300,15 @@ If no athletes can be identified, return: { "athletes": [] }`,
     (a) => (a.face_confidence ?? 0) >= confidence_threshold || (a.jersey_confidence ?? 0) >= confidence_threshold
   );
 
-  const { data: thumbData } = await supabase.storage
-    .from('photos-original')
-    .createSignedUrl(storage_path, 3600);
-  const thumbnailUrl = thumbData?.signedUrl ?? null;
+  if (matched.length === 0) return finishUnmatched();
 
-  if (matched.length > 0) {
-    matched.sort((a, b) => a.position_x - b.position_x);
-    const matchedNames = matched.map((a) => a.name);
+  matched.sort((a, b) => a.position_x - b.position_x);
+  const matchedNames = matched.map((a) => a.name);
+  const maxFace = Math.max(...matched.map((a) => a.face_confidence ?? 0));
+  const maxJersey = Math.max(...matched.map((a) => a.jersey_confidence ?? 0));
+  const hasFace = matched.some((a) => (a.face_confidence ?? 0) >= confidence_threshold);
+  const hasJersey = matched.some((a) => (a.jersey_confidence ?? 0) >= confidence_threshold);
+  const matchType = hasFace && hasJersey ? 'both' : hasFace ? 'face' : 'jersey';
 
-    const maxFace = Math.max(...matched.map((a) => a.face_confidence ?? 0));
-    const maxJersey = Math.max(...matched.map((a) => a.jersey_confidence ?? 0));
-    const hasFace = matched.some((a) => (a.face_confidence ?? 0) >= confidence_threshold);
-    const hasJersey = matched.some((a) => (a.jersey_confidence ?? 0) >= confidence_threshold);
-    const matchType = hasFace && hasJersey ? 'both' : hasFace ? 'face' : 'jersey';
-
-    let processedBuffer: Buffer;
-    try {
-      processedBuffer = await writeAthleteNames(originalBuffer, matchedNames);
-    } catch (xmpErr) {
-      const isNoXmp = xmpErr instanceof Error && xmpErr.message === 'XMP segment not found';
-      const status = isNoXmp ? 'skipped' : 'error';
-      const error_message = isNoXmp ? undefined : (xmpErr instanceof Error ? xmpErr.message : 'XMP write failed');
-      await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
-      await supabase.from('photos').update({ status, ...(error_message ? { error_message } : {}), processed_path: processedPath }).eq('id', id);
-      return NextResponse.json({ status, filename, thumbnail_url: thumbnailUrl });
-    }
-
-    await supabase.storage.from('photos-processed').upload(processedPath, processedBuffer, { contentType: 'image/jpeg', upsert: true });
-
-    await supabase.from('photos').update({
-      status: 'matched',
-      matched_names: matchedNames,
-      face_confidence: maxFace > 0 ? maxFace : null,
-      jersey_confidence: maxJersey > 0 ? maxJersey : null,
-      match_type: matchType,
-      processed_path: processedPath,
-    }).eq('id', id);
-
-    return NextResponse.json({
-      status: 'matched',
-      matched_names: matchedNames,
-      face_confidence: maxFace > 0 ? maxFace : null,
-      jersey_confidence: maxJersey > 0 ? maxJersey : null,
-      match_type: matchType,
-      filename,
-      thumbnail_url: thumbnailUrl,
-    });
-  }
-
-  // No matches
-  await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
-  await supabase.from('photos').update({ status: 'unmatched', processed_path: processedPath }).eq('id', id);
-
-  return NextResponse.json({
-    status: 'unmatched',
-    matched_names: null,
-    face_confidence: null,
-    jersey_confidence: null,
-    match_type: null,
-    filename,
-    thumbnail_url: thumbnailUrl,
-  });
+  return finishMatched(matchedNames, maxFace > 0 ? maxFace : null, maxJersey > 0 ? maxJersey : null, matchType);
 }

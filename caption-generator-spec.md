@@ -2,7 +2,9 @@
 
 ## Overview
 
-A web app for sports photographers that automates athlete identification in post-edited JPG photos. The app scrapes any college athletics roster URL, uses the Claude Vision API to match athlete faces and jersey numbers to each uploaded photo, writes the athlete name(s) into two XMP metadata fields embedded in the JPG, and provides a ZIP download of all processed files.
+A web app for sports photographers that automates athlete identification in post-edited JPG photos. The app scrapes any college athletics roster URL, uses either the Claude Vision API or AWS Rekognition to match athletes to each uploaded photo, writes the athlete name(s) into two XMP metadata fields embedded in the JPG, and provides a ZIP download of all processed files.
+
+The **recognition engine** is selected per-job at setup. **Claude Vision** handles face matching and jersey number reading in a single API call. **AWS Rekognition** uses a dedicated face-matching service (potentially higher accuracy or lower per-photo cost) but cannot read jersey numbers.
 
 **Target user:** Sports photographers covering college athletics (initially Fausto Ibarra / ISI Photos). v1 is single-user — no login required. Auth and multi-user support are v2.
 
@@ -15,8 +17,9 @@ A web app for sports photographers that automates athlete identification in post
 - **Framework:** Next.js 14, TypeScript
 - **Styling:** Tailwind CSS, shadcn/ui components
 - **DB + Storage:** Supabase (no auth for v1)
-- **AI:** Anthropic Claude API (`@anthropic-ai/sdk`)
-- **Image processing:** `sharp` (resize before Claude API calls)
+- **AI:** Anthropic Claude API (`@anthropic-ai/sdk`) — roster scraping (always) + photo recognition (Claude mode)
+- **Face recognition (alternative):** AWS Rekognition (`@aws-sdk/client-rekognition`) — face-only matching, selected per-job at setup
+- **Image processing:** `sharp` (resize before API calls)
 - **XMP manipulation:** `@xmldom/xmldom` (pure JS, no exiftool)
 - **File upload UI:** `react-dropzone`
 - **State management:** `zustand`
@@ -121,17 +124,25 @@ The single page at `/` renders different UI based on the current zustand job sta
 
 The `session_id` UUID is generated when the user submits the setup form and stored in zustand for the duration of the job. It remains the same across all batches — all photos for a job share one `session_id`.
 
-Zustand also tracks `batch_number` (integer, starts at 1) and `cumulative_stats` (totals across all completed batches, updated when a batch finishes). The current batch's IDs are tracked in `current_batch_photo_ids: string[]` so the processing view can scope its live table to just the active batch.
+Zustand also tracks:
+- `recognition_engine: 'claude' | 'rekognition'` — set at job setup, unchanged for the life of the session
+- `batch_number` (integer, starts at 1)
+- `cumulative_stats` (totals across all completed batches, updated when a batch finishes)
+- `current_batch_photo_ids: string[]` — IDs of photos in the active batch, so the processing view can scope its live table
 
 ---
 
 ## API Routes
 
 ### `POST /api/scrape-roster`
-Scrapes the roster URL using Claude, downloads headshots to Supabase Storage, inserts `roster_athletes` rows. Body: `{ session_id, roster_url, sport, has_jersey_numbers }`. Updates zustand state to `roster_ready` on completion (via response).
+Scrapes the roster URL using Claude, downloads headshots to Supabase Storage, inserts `roster_athletes` rows. Body: `{ session_id, roster_url, sport, has_jersey_numbers, recognition_engine }`. Updates zustand state to `roster_ready` on completion (via response).
+
+**If `recognition_engine` is `rekognition`:** after all headshots are stored, creates an AWS Rekognition Collection with `CollectionId = session_id` and calls `IndexFaces` for each successfully downloaded headshot, using the athlete's `id` (UUID) as the `ExternalImageId`. Athletes with no headshot are silently skipped for face indexing.
 
 ### `POST /api/rescrape`
-Re-runs roster scraping. Deletes existing `roster_athletes` rows for the `session_id`, re-downloads headshots, re-inserts rows. Body: `{ session_id, roster_url, sport, has_jersey_numbers }`.
+Re-runs roster scraping. Deletes existing `roster_athletes` rows for the `session_id`, re-downloads headshots, re-inserts rows. Body: `{ session_id, roster_url, sport, has_jersey_numbers, recognition_engine }`.
+
+**If `recognition_engine` is `rekognition`:** deletes the existing Rekognition Collection for the `session_id` (if present) before recreating and re-indexing.
 
 ### `GET /api/status?session_id=...`
 Returns aggregate counts for the entire session:
@@ -144,28 +155,40 @@ Polled by the client every 2 seconds during active processing. Counts cover all 
 Handles photo uploads. Body: multipart form with JPG file + `session_id`. Uploads to `photos-original/{session_id}/{filename}`, inserts `photos` row (status: `queued`), returns `{ photo_id }`.
 
 ### `POST /api/photos/[id]/process`
-Processes a single photo:
+Processes a single photo. Body includes `recognition_engine`. Behavior branches after the common setup steps.
+
+**Common steps (both engines):**
 1. Downloads JPG from `photos-original/`
 2. Resizes to longest edge 1200px using `sharp`
+
+**Claude mode:**
 3. Fetches all `roster_athletes` for the `session_id`
-4. Calls Claude Vision API (see prompt below)
-5. Parses response JSON
-6. If any athlete has `face_confidence` OR `jersey_confidence` ≥ confidence threshold:
+4. Calls Claude Vision API with roster headshot images + event photo (see prompt below)
+5. Parses response JSON — produces `face_confidence`, `jersey_confidence`, `match_type`, `position_x` per athlete
+
+**Rekognition mode:**
+3. Calls `SearchFacesByImage` against the session's Rekognition Collection using the resized photo buffer
+4. Maps each match's `ExternalImageId` back to a `roster_athletes` row to retrieve the athlete name
+5. Sets `face_confidence` = Rekognition `Similarity` ÷ 100 (Rekognition uses 0–100); `jersey_confidence` = `null`; `match_type` = `"face"`
+6. Orders matched athletes left-to-right by bounding box `Left` value for name string formatting
+
+**Common steps (both engines):**
+7. If any athlete's relevant confidence score ≥ confidence threshold:
    - Writes athlete names to `dc:description` (replace `enter_caption_here`) and `dc:title`
    - Uploads modified JPG to `photos-processed/`
    - Updates `photos` row: status `matched`, matched_names, face_confidence, jersey_confidence, match_type
-7. If no match:
+8. If no match:
    - Copies original JPG to `photos-processed/` unchanged
    - Updates `photos` row: status `unmatched`
-8. On error: retry once automatically. If second attempt fails, mark status `error` (treated as unmatched for download). Store error message.
-9. If XMP APP1 segment is absent or malformed: mark status `skipped`, copy original unchanged, flag in results.
+9. On error: retry once automatically. If second attempt fails, mark status `error` (treated as unmatched for download). Store error message.
+10. If XMP APP1 segment is absent or malformed: mark status `skipped`, copy original unchanged, flag in results.
 
 ### `GET /api/download?session_id=...`
-Streams a ZIP of all files in `photos-processed/{session_id}/` using `jszip`. On successful ZIP generation, **deletes all storage files and DB rows** for the session_id (cleanup). Returns ZIP with `Content-Disposition: attachment; filename="{job_name}.zip"`.
+Streams a ZIP of all files in `photos-processed/{session_id}/` using `jszip`. On successful ZIP generation, **deletes all storage files and DB rows** for the session_id (cleanup). If `recognition_engine` is `rekognition`, also calls `DeleteCollection` for the session's Rekognition Collection. Returns ZIP with `Content-Disposition: attachment; filename="{job_name}.zip"`.
 
 ---
 
-## Claude Vision API — Roster Scraping Prompt
+## Claude Vision API — Roster Scraping Prompt (both modes)
 
 ```
 You are extracting athlete data from a sports team roster page.
@@ -191,7 +214,43 @@ Return only valid JSON. Example:
 
 ---
 
-## Claude Vision API — Photo Processing Prompt
+## AWS Rekognition — Face Matching (Rekognition mode)
+
+### Collection lifecycle
+
+| Event | Action |
+|-------|--------|
+| Roster scraped | `CreateCollection(CollectionId=session_id)` |
+| Each headshot indexed | `IndexFaces(CollectionId=session_id, ExternalImageId=athlete_id)` |
+| Re-scrape | `DeleteCollection` → recreate → re-index |
+| Session cleanup (on download) | `DeleteCollection(CollectionId=session_id)` |
+
+### Per-photo matching
+
+```typescript
+const result = await rekognition.searchFacesByImage({
+  CollectionId: session_id,
+  Image: { Bytes: resizedJpgBuffer },
+  FaceMatchThreshold: confidenceThreshold * 100, // Rekognition uses 0–100
+  MaxFaces: 10,
+});
+```
+
+Each entry in `result.FaceMatches` provides:
+- `Face.ExternalImageId` — the `roster_athletes.id` UUID used to look up the athlete name
+- `Similarity` — 0–100; stored as `face_confidence` (divided by 100)
+- `Face.BoundingBox.Left` — used to sort matched athletes left-to-right for the name string
+
+### Limitations vs. Claude mode
+
+- **No jersey number matching.** `jersey_confidence` is always `null`; `match_type` is always `"face"`. The `Has Jersey Numbers` checkbox is hidden in the UI when Rekognition is selected.
+- **Headshots with no detectable face** are silently skipped during `IndexFaces`; those athletes cannot be matched in this mode.
+- **Multiple athletes per photo** are returned naturally — one `FaceMatch` entry per detected face.
+- **AWS credentials required:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` must be set as environment variables.
+
+---
+
+## Claude Vision API — Photo Processing Prompt (Claude mode)
 
 ```
 You are identifying college athletes in a sports photograph.
@@ -283,14 +342,20 @@ The XMP block is a JPEG APP1 segment identified by the namespace `http://ns.adob
 ### Job Setup (state: `setup`)
 
 - Heading: "Caption Generator"
-- Fields: School Name (text), Sport (text), Roster URL (text), Has Jersey Numbers (checkbox), Confidence Threshold (number, default 0.80)
+- Fields:
+  - School Name (text)
+  - Sport (text)
+  - Roster URL (text)
+  - **Recognition Engine** — radio or select: `Claude Vision` (default) | `AWS Rekognition`
+  - Has Jersey Numbers (checkbox) — **hidden when Rekognition is selected** (jersey matching unavailable)
+  - Confidence Threshold (number, default 0.80)
 - "Start →" button submits and triggers roster scraping
-- On submit: generate `session_id` UUID, store in zustand, call `POST /api/scrape-roster`, transition to `scraping`
+- On submit: generate `session_id` UUID, store `recognition_engine` in zustand, call `POST /api/scrape-roster`, transition to `scraping`
 
 ### Scraping (state: `scraping`)
 
 - Loading spinner
-- "Scraping roster..." message
+- "Scraping roster..." message (Claude mode) / "Scraping roster and indexing faces..." message (Rekognition mode)
 - Cancel button resets to `setup`
 
 ### Roster Confirmation (state: `roster_ready`)
@@ -325,9 +390,9 @@ Photo list (updates live via polling, shows only current batch photos):
 | 120×80px | `_FMI1236.JPG` | ⏳ Processing | — | — | — |
 
 Match type badges:
-- `Face + Jersey` — green
+- `Face + Jersey` — green (Claude mode only)
 - `Face` — blue
-- `Jersey` — amber
+- `Jersey` — amber (Claude mode only)
 - `Unmatched` — gray
 
 **When the batch finishes (Batch Complete action bar):**
@@ -369,12 +434,16 @@ Unmatched photos section: list of filenames that need manual entry in Photo Mech
 |----------|----------|
 | Roster scraping fails (site down, unexpected layout) | Transition to `error` state with "Retry" button that re-runs scraping |
 | Roster page is JS-rendered (empty HTML returned) | Show "No athletes found" error with "Try re-scraping" option |
-| Individual headshot download fails | Athlete added to roster with placeholder; face matching skipped, jersey matching still possible |
+| Individual headshot download fails | Athlete added to roster with placeholder; face matching skipped (both modes), jersey matching still possible (Claude mode only) |
 | Claude API call fails on photo | Retry once automatically; if still failing, mark photo `error` (treated as unmatched) |
+| Rekognition `CreateCollection` fails during scraping | Transition to `error` state with "Retry" button |
+| Rekognition `IndexFaces` fails for a headshot | Log and skip; athlete will not be matchable via face in this session |
+| All headshots fail `IndexFaces` (no faces detected in any headshot) | Warn user at `roster_ready` with a banner: "No faces were indexed — recognition will return no matches" |
+| Rekognition `SearchFacesByImage` fails on a photo | Retry once automatically; if still failing, mark photo `error` (treated as unmatched) |
 | XMP segment missing or malformed in JPG | Mark photo `skipped`, copy original unchanged, flag in results |
 | `enter_caption_here` not found in `dc:description` | Skip `dc:description` update; still update `dc:title` |
 | Photo upload fails | Show per-file error in upload zone; allow retry |
-| Download/cleanup fails | Show error with retry button; do not delete files if ZIP generation failed |
+| Download/cleanup fails | Show error with retry button; do not delete files or Rekognition Collection if ZIP generation failed |
 
 ---
 
@@ -418,7 +487,7 @@ All 4 tests pass. ✓
 
 | # | Decision | Alternatives considered | Reason |
 |---|----------|------------------------|--------|
-| 1 | Claude Vision API for face + jersey recognition | AWS Rekognition, Azure Face API | Already in stack; handles jersey reading in same call; no additional service |
+| 1 | Recognition engine selectable per-job: Claude Vision (default) or AWS Rekognition | Hardcoding one engine; Azure Face API | Claude Vision handles face + jersey in a single call; Rekognition is a dedicated face-matching service that may offer higher accuracy or lower per-photo cost but cannot read jersey numbers — user picks based on sport and accuracy needs |
 | 2 | Claude API for roster scraping | Sport-specific CSS scrapers | Roster pages differ by school and sport; Claude handles structural variation |
 | 3 | Pure JS XMP manipulation (`@xmldom/xmldom`) | `exiftool` subprocess | Vercel serverless can't reliably run binaries |
 | 4 | Client-orchestrated processing (3 concurrent calls) | Single long-running server loop | Avoids Vercel timeout; natural per-photo progress updates |
@@ -434,3 +503,4 @@ All 4 tests pass. ✓
 | 14 | Cleanup on download | Keep files indefinitely | Storage is free at this scale; cleanup keeps things tidy without a cron job |
 | 15 | Raw HTML fetch for roster scraping | Headless browser (Puppeteer) | Covers the majority of schools; JS-rendered pages are v2 |
 | 16 | Batch upload loop (uploading ⇄ processing, explicit "Finish" to download) | Single upload-then-download flow | Lets the photographer process photos in card-by-card bursts during a game without waiting for a full shoot to finish; same `session_id` keeps all batches in one ZIP |
+| 17 | No jersey matching in Rekognition mode | Textract OCR or supplemental Claude call for jersey numbers | Adds a third service dependency and extra latency for a feature not needed in all sports; deferrable to v2 or a per-sport toggle |

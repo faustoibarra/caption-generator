@@ -8,6 +8,7 @@ export function RosterConfirmation() {
     jobName,
     sport,
     hasJerseyNumbers,
+    recognitionEngine,
     athletes,
     sessionId,
     rosterUrl,
@@ -30,6 +31,7 @@ export function RosterConfirmation() {
           roster_url: rosterUrl,
           sport,
           has_jersey_numbers: hasJerseyNumbers,
+          recognition_engine: recognitionEngine,
         }),
       });
       const data = await res.json();

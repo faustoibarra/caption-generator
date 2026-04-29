@@ -76,6 +76,7 @@ export function ProcessingProgress() {
     sessionId,
     confidenceThreshold,
     hasJerseyNumbers,
+    recognitionEngine,
     sport,
     finishBatch,
     finishJob,
@@ -172,6 +173,7 @@ export function ProcessingProgress() {
             confidence_threshold: confidenceThreshold,
             has_jersey_numbers: hasJerseyNumbers,
             sport,
+            recognition_engine: recognitionEngine,
           }),
         });
         const data = await resp.json();

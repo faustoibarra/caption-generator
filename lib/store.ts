@@ -37,6 +37,7 @@ interface JobStore {
   rosterUrl: string;
   sport: string;
   hasJerseyNumbers: boolean;
+  recognitionEngine: 'claude' | 'rekognition';
   confidenceThreshold: number;
   errorMessage: string | null;
   athletes: Athlete[];
@@ -51,6 +52,7 @@ interface JobStore {
     rosterUrl: string;
     sport: string;
     hasJerseyNumbers: boolean;
+    recognitionEngine: 'claude' | 'rekognition';
     confidenceThreshold: number;
     sessionId: string;
   }) => void;
@@ -75,6 +77,7 @@ const initialState = {
   rosterUrl: '',
   sport: '',
   hasJerseyNumbers: false,
+  recognitionEngine: 'claude' as 'claude' | 'rekognition',
   confidenceThreshold: 0.4,
   errorMessage: null,
   athletes: [],
@@ -95,6 +98,7 @@ export const useJobStore = create<JobStore>((set) => ({
       rosterUrl: fields.rosterUrl,
       sport: fields.sport,
       hasJerseyNumbers: fields.hasJerseyNumbers,
+      recognitionEngine: fields.recognitionEngine,
       confidenceThreshold: fields.confidenceThreshold,
       errorMessage: null,
     }),
