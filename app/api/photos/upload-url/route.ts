@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
+import { randomUUID } from 'crypto';
 
 export async function POST(request: NextRequest) {
   let body: { session_id: string; filename: string };
@@ -15,7 +16,20 @@ export async function POST(request: NextRequest) {
   }
 
   const supabase = createServiceClient();
-  const storagePath = `photos-original/${session_id}/${filename}`;
+
+  // Reuse existing DB record if this filename was already uploaded in this session
+  // (handles retries without creating duplicate rows). Reuse the same storage_path so
+  // the signed URL points to the same object.
+  const { data: existing } = await supabase
+    .from('photos')
+    .select('id, storage_path')
+    .eq('session_id', session_id)
+    .eq('filename', filename)
+    .single();
+
+  // Use the existing storage path on retry, or generate a UUID-based one for new uploads.
+  // UUID avoids invalid-key errors from filenames with spaces, colons, or other special chars.
+  const storagePath = existing?.storage_path ?? `photos-original/${session_id}/${randomUUID()}.jpg`;
 
   // Create signed upload URL — upsert:true so retries don't fail if file already exists
   const { data: signed, error: signErr } = await supabase.storage
@@ -26,23 +40,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Failed to create upload URL: ${signErr?.message}` }, { status: 500 });
   }
 
-  // Signed download URL for thumbnail display (valid 1h; file may not exist yet but URL is ready)
+  // Signed download URL for thumbnail display (valid 1h)
   const { data: thumb } = await supabase.storage
     .from('photos-original')
     .createSignedUrl(storagePath, 3600);
   const thumbnailUrl = thumb?.signedUrl ?? null;
 
-  // Reuse existing DB record if this filename was already uploaded in this session
-  // (handles retries without creating duplicate rows)
-  const { data: existing } = await supabase
-    .from('photos')
-    .select('id')
-    .eq('session_id', session_id)
-    .eq('filename', filename)
-    .single();
-
   if (existing) {
-    // Reset to queued so it will be re-processed
     await supabase.from('photos').update({ status: 'queued', error_message: null }).eq('id', existing.id);
     return NextResponse.json({ photo_id: existing.id, signed_url: signed.signedUrl, thumbnail_url: thumbnailUrl });
   }
