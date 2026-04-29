@@ -137,8 +137,18 @@ export async function POST(
       const status = isNoXmp ? 'skipped' : 'error';
       const error_message = isNoXmp ? undefined : (xmpErr instanceof Error ? xmpErr.message : 'XMP write failed');
       await supabase.storage.from('photos-processed').upload(processedPath, originalBuffer, { contentType: 'image/jpeg', upsert: true });
-      await supabase.from('photos').update({ status, ...(error_message ? { error_message } : {}), processed_path: processedPath }).eq('id', id);
-      return NextResponse.json({ status, filename, thumbnail_url: thumbnailUrl });
+      await supabase.from('photos').update({
+        status,
+        ...(error_message ? { error_message } : {}),
+        processed_path: processedPath,
+        ...(isNoXmp ? { matched_names: matchedNames, face_confidence: faceConfidence, jersey_confidence: jerseyConfidence, match_type: matchType } : {}),
+      }).eq('id', id);
+      return NextResponse.json({
+        status,
+        filename,
+        thumbnail_url: thumbnailUrl,
+        ...(isNoXmp ? { matched_names: matchedNames, face_confidence: faceConfidence, jersey_confidence: jerseyConfidence, match_type: matchType } : {}),
+      });
     }
 
     await supabase.storage.from('photos-processed').upload(processedPath, processedBuffer, { contentType: 'image/jpeg', upsert: true });
