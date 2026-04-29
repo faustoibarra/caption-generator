@@ -192,6 +192,15 @@ export async function POST(
       .in('id', athleteIds);
     console.log(`[process] DB lookup found=${athleteRows?.length ?? 0} err=${athleteErr?.message ?? 'none'}`);
 
+    if ((athleteRows?.length ?? 0) === 0) {
+      // Diagnose: check if athlete exists in any session
+      const { data: anyRows } = await supabase
+        .from('roster_athletes')
+        .select('id, name, session_id')
+        .in('id', athleteIds);
+      console.log(`[process] DB fallback (any session) found=${anyRows?.length ?? 0} rows=${JSON.stringify(anyRows)}`);
+    }
+
     const sortedMatches = [...matches].sort((a, b) => a.boundingBoxLeft - b.boundingBoxLeft);
     const matchedNames = sortedMatches
       .map((m) => (athleteRows as { id: string; name: string }[] | null)?.find((a) => a.id === m.athleteId)?.name)
