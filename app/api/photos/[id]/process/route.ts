@@ -184,11 +184,13 @@ export async function POST(
 
     // Look up athlete names from DB (filter by session_id for safety)
     const athleteIds = matches.map((m) => m.athleteId);
-    const { data: athleteRows } = await supabase
+    console.log(`[process] DB lookup session=${session_id} athlete_ids=${JSON.stringify(athleteIds)}`);
+    const { data: athleteRows, error: athleteErr } = await supabase
       .from('roster_athletes')
       .select('id, name')
       .eq('session_id', session_id)
       .in('id', athleteIds);
+    console.log(`[process] DB lookup found=${athleteRows?.length ?? 0} err=${athleteErr?.message ?? 'none'}`);
 
     const sortedMatches = [...matches].sort((a, b) => a.boundingBoxLeft - b.boundingBoxLeft);
     const matchedNames = sortedMatches
