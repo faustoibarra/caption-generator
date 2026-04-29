@@ -17,19 +17,18 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServiceClient();
 
-  // Reuse existing DB record if this filename was already uploaded in this session
-  // (handles retries without creating duplicate rows). Reuse the same storage_path so
-  // the signed URL points to the same object.
+  // Always generate a fresh UUID-based storage path — never use the original filename.
+  // This avoids invalid-key errors from filenames with spaces, colons, or other special chars.
+  // On retry, the DB record's storage_path is updated to the new UUID path.
+  const storagePath = `photos-original/${session_id}/${randomUUID()}.jpg`;
+
+  // Check for an existing record so retries reuse the same photo_id (no duplicate rows).
   const { data: existing } = await supabase
     .from('photos')
-    .select('id, storage_path')
+    .select('id')
     .eq('session_id', session_id)
     .eq('filename', filename)
     .single();
-
-  // Use the existing storage path on retry, or generate a UUID-based one for new uploads.
-  // UUID avoids invalid-key errors from filenames with spaces, colons, or other special chars.
-  const storagePath = existing?.storage_path ?? `photos-original/${session_id}/${randomUUID()}.jpg`;
 
   // Create signed upload URL — upsert:true so retries don't fail if file already exists
   const { data: signed, error: signErr } = await supabase.storage
@@ -47,7 +46,7 @@ export async function POST(request: NextRequest) {
   const thumbnailUrl = thumb?.signedUrl ?? null;
 
   if (existing) {
-    await supabase.from('photos').update({ status: 'queued', error_message: null }).eq('id', existing.id);
+    await supabase.from('photos').update({ status: 'queued', error_message: null, storage_path: storagePath }).eq('id', existing.id);
     return NextResponse.json({ photo_id: existing.id, signed_url: signed.signedUrl, thumbnail_url: thumbnailUrl });
   }
 
