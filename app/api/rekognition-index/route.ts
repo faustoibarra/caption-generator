@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { createCollection, indexFace } from '@/lib/rekognition';
+import { createCollection, deleteCollection, indexFace } from '@/lib/rekognition';
 
 export const maxDuration = 300;
 
@@ -26,6 +26,8 @@ export async function POST(req: NextRequest) {
     const rows = athletes ?? [];
     console.log(`[rekognition-index] session=${session_id} athletes_with_headshots=${rows.length}`);
 
+    // Delete and rebuild so stale face vectors from prior scrapes don't cause mismatches
+    await deleteCollection(session_id);
     await createCollection(session_id);
 
     const results = await Promise.allSettled(

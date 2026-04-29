@@ -226,6 +226,7 @@ Return only valid JSON with no commentary. Example:
       const ta = Date.now();
       const athleteId = crypto.randomUUID();
       let storagePath: string | null = null;
+      let headshotBuffer: Buffer | null = null;
 
       // Try to download and upload headshot
       if (raw.headshot_url) {
@@ -245,16 +246,8 @@ Return only valid JSON with no commentary. Example:
             const uploadMs = Date.now() - tu;
             if (!uploadError) {
               storagePath = storageKey;
+              headshotBuffer = imgBuffer;
               console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  download=${downloadMs}ms  upload=${uploadMs}ms  size=${imgBuffer.length}B`);
-              if (recognitionEngine === 'rekognition') {
-                try {
-                  const ti = Date.now();
-                  const faceFound = await indexFace(sessionId, imgBuffer, athleteId);
-                  console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  rekognition index  face_found=${faceFound}  time=${Date.now() - ti}ms`);
-                } catch (rekErr) {
-                  console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  rekognition index error: ${rekErr instanceof Error ? rekErr.message : rekErr}`);
-                }
-              }
             } else {
               console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  storage upload error: ${uploadError.message}`);
             }
@@ -281,6 +274,17 @@ Return only valid JSON with no commentary. Example:
       if (dbError) {
         console.error(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  DB insert failed:`, JSON.stringify(dbError));
         throw new Error(dbError.message);
+      }
+
+      // Index in Rekognition only after DB insert succeeds — prevents orphaned face vectors
+      if (recognitionEngine === 'rekognition' && storagePath && headshotBuffer) {
+        try {
+          const ti = Date.now();
+          const faceFound = await indexFace(sessionId, headshotBuffer, athleteId);
+          console.log(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  rekognition index  face_found=${faceFound}  time=${Date.now() - ti}ms`);
+        } catch (rekErr) {
+          console.warn(`[scrape-roster] [${i + 1}/${rawAthletes.length}] ${raw.name}  rekognition index error: ${rekErr instanceof Error ? rekErr.message : rekErr}`);
+        }
       }
 
       // Generate signed URL for client display
