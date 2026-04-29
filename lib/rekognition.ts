@@ -34,7 +34,10 @@ export async function indexFace(
     MaxFaces: 1,
     DetectionAttributes: [],
   }));
-  return (result.FaceRecords?.length ?? 0) > 0;
+  const found = (result.FaceRecords?.length ?? 0) > 0;
+  const unindexed = result.UnindexedFaces?.length ?? 0;
+  console.log(`[rekognition] indexFace collection=${collectionId} athlete=${athleteId} face_found=${found} unindexed=${unindexed}`);
+  return found;
 }
 
 export interface FaceMatch {
@@ -58,7 +61,18 @@ export async function searchFacesByImage(
       FaceMatchThreshold: confidenceThreshold * 100,
       MaxFaces: 10,
     }));
-    return (result.FaceMatches ?? [])
+    const searchedConf = result.SearchedFaceConfidence ?? 0;
+    const rawMatches = result.FaceMatches ?? [];
+    console.log(
+      `[rekognition] searchFaces collection=${collectionId}` +
+      ` searched_face_confidence=${searchedConf.toFixed(1)}` +
+      ` threshold=${(confidenceThreshold * 100).toFixed(0)}` +
+      ` raw_matches=${rawMatches.length}` +
+      (rawMatches.length > 0
+        ? ` top_similarity=${(rawMatches[0].Similarity ?? 0).toFixed(1)} id=${rawMatches[0].Face?.ExternalImageId}`
+        : '')
+    );
+    return rawMatches
       .filter((m) => m.Face?.ExternalImageId)
       .map((m) => ({
         athleteId: m.Face!.ExternalImageId!,
@@ -67,7 +81,11 @@ export async function searchFacesByImage(
       }));
   } catch (err) {
     // Rekognition throws InvalidParameterException when no faces are detected in the input image
-    if (err instanceof Error && err.name === 'InvalidParameterException') return [];
+    if (err instanceof Error && err.name === 'InvalidParameterException') {
+      console.log(`[rekognition] searchFaces collection=${collectionId} — no faces detected in image`);
+      return [];
+    }
+    console.error(`[rekognition] searchFaces error collection=${collectionId}:`, err);
     throw err;
   }
 }

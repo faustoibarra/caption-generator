@@ -44,10 +44,15 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const indexed = results.filter(
-      (r): r is PromiseFulfilledResult<{ indexed: boolean }> =>
-        r.status === 'fulfilled' && r.value.indexed
-    ).length;
+    let indexed = 0;
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        console.error(`[rekognition-index] ${rows[i].name}  FAILED: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+      } else if (r.value.indexed) {
+        indexed++;
+      }
+    }
 
     console.log(`[rekognition-index] done  indexed=${indexed}/${rows.length}`);
     return NextResponse.json({ ok: true, indexed, total: rows.length });
