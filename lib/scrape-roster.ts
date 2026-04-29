@@ -3,8 +3,8 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { createCollection, indexFace } from '@/lib/rekognition';
 
 const anthropic = new Anthropic({
-  timeout: 80_000,   // 80s per attempt — fits 3 attempts within 300s Vercel limit
-  maxRetries: 2,     // 3 total attempts; SDK auto-retries on 529 overloaded
+  timeout: 120_000,  // 2 min per attempt
+  maxRetries: 4,     // up to 5 total attempts; SDK auto-retries on 529 overloaded
 });
 
 export interface AthleteResult {
@@ -105,17 +105,15 @@ export async function scrapeRoster(
       ? strippedHtml.slice(0, HTML_CAP) + '\n<!-- [truncated] -->'
       : strippedHtml;
 
-  // Structured data cap: 100 KB when it's the primary source, 60 KB otherwise.
-  // Sort blocks smallest-first so compact blocks (with dense athlete data) are always
-  // included before large framework-state blobs get truncated.
-  const TOTAL_STRUCTURED_CAP = hasStructuredData ? 100_000 : 60_000;
-  const sortedStructuredData = [...structuredData].sort((a, b) => a.length - b.length);
+  // Structured data cap: 200 KB when it's the primary source, 60 KB otherwise
+  // (200KB was confirmed sufficient for the largest known roster; 400KB caused API timeouts)
+  const TOTAL_STRUCTURED_CAP = hasStructuredData ? 200_000 : 60_000;
   let structuredDataForPrompt = '';
   let structuredCharsUsed = 0;
-  for (let i = 0; i < sortedStructuredData.length; i++) {
+  for (let i = 0; i < structuredData.length; i++) {
     const remaining = TOTAL_STRUCTURED_CAP - structuredCharsUsed;
     if (remaining <= 0) break;
-    const chunk = sortedStructuredData[i].slice(0, remaining);
+    const chunk = structuredData[i].slice(0, remaining);
     structuredDataForPrompt += `--- Embedded JSON block ${i + 1} ---\n${chunk}\n`;
     structuredCharsUsed += chunk.length;
   }

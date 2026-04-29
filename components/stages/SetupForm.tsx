@@ -67,31 +67,50 @@ export function SetupForm() {
   async function scrapeAndContinue(rescrape = false) {
     const sessionId = crypto.randomUUID();
     setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, recognitionEngine, confidenceThreshold, sessionId });
-    startScraping();
     setSubmitting(true);
 
-    try {
-      const res = await fetch('/api/scrape-roster', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          roster_url: rosterUrl,
-          sport,
-          has_jersey_numbers: hasJerseyNumbers,
-          recognition_engine: recognitionEngine,
-          rescrape,
-        }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || `Server error: ${res.status}`);
-      setAthletes(data.athletes);
-      setRosterReady();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error during roster scraping.');
-    } finally {
-      setSubmitting(false);
+    const MAX_ATTEMPTS = 5;
+    let lastError: Error = new Error('Unknown error during roster scraping.');
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const msg = attempt === 1
+        ? undefined
+        : `Claude timed out — retrying (${attempt} of ${MAX_ATTEMPTS})…`;
+      startScraping(msg);
+
+      try {
+        const res = await fetch('/api/scrape-roster', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            roster_url: rosterUrl,
+            sport,
+            has_jersey_numbers: hasJerseyNumbers,
+            recognition_engine: recognitionEngine,
+            rescrape,
+          }),
+        });
+
+        let data: { ok: boolean; athletes?: { id: string; name: string; jersey_number: string | null; headshot_url: string | null }[]; error?: string };
+        try {
+          data = await res.json();
+        } catch {
+          throw new Error('Claude timed out');
+        }
+
+        if (!data.ok) throw new Error(data.error || `Server error: ${res.status}`);
+        setAthletes(data.athletes ?? []);
+        setRosterReady();
+        setSubmitting(false);
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('Unknown error during roster scraping.');
+      }
     }
+
+    setError(lastError.message);
+    setSubmitting(false);
   }
 
   async function useExistingRoster() {
