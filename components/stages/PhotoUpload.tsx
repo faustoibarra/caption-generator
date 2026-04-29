@@ -33,11 +33,18 @@ async function uploadFile(
   }
   const { photo_id, signed_url, thumbnail_url } = await urlRes.json() as { photo_id: string; signed_url: string; thumbnail_url: string | null };
 
-  // Step 2: PUT the file directly to Supabase Storage — bypasses Vercel's 4.5MB body limit
+  // Step 2: PUT the file directly to Supabase Storage — bypasses Vercel's 4.5MB body limit.
+  // Must use FormData matching @supabase/storage-js SDK behavior for signed-URL blob uploads:
+  // empty-string field key for the file + cacheControl field. Raw binary with Content-Type
+  // header causes 400 on this endpoint.
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', signed_url);
-    xhr.setRequestHeader('Content-Type', 'image/jpeg');
+    // Do NOT set Content-Type manually — FormData sets it with the correct multipart boundary.
+
+    const formData = new FormData();
+    formData.append('cacheControl', '3600');
+    formData.append('', file, file.name); // empty-string key matches SDK
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
@@ -45,12 +52,16 @@ async function uploadFile(
 
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`Storage upload failed (${xhr.status})`));
+      else {
+        let detail = '';
+        try { detail = ` — ${(JSON.parse(xhr.responseText) as { message?: string }).message ?? xhr.responseText}`; } catch { /* ignore */ }
+        reject(new Error(`Storage upload failed (${xhr.status})${detail}`));
+      }
     });
     xhr.addEventListener('error', () => reject(new Error('Network error')));
     xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
 
-    xhr.send(file);
+    xhr.send(formData);
   });
 
   return { photo_id, thumbnail_url };
