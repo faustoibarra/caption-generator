@@ -36,24 +36,28 @@ export async function GET(req: NextRequest) {
     const sessionId = rows[0].session_id;
     const sessionRows = (rows as RosterRow[]).filter((r) => r.session_id === sessionId);
 
-    // Generate signed URLs for headshots
-    const athletes = await Promise.all(
-      sessionRows.map(async (row: RosterRow) => {
-        let signedUrl: string | null = null;
-        if (row.headshot_url) {
-          const { data: signed } = await supabase.storage
-            .from('rosters')
-            .createSignedUrl(row.headshot_url, 3600);
-          signedUrl = signed?.signedUrl ?? null;
-        }
-        return {
-          id: row.id,
-          name: row.name,
-          jersey_number: row.jersey_number ?? null,
-          headshot_url: signedUrl,
-        };
-      })
-    );
+    // Generate signed URLs for headshots — use batch API to avoid rate-limiting 24+ individual calls
+    const headshotPaths = sessionRows
+      .map((r: RosterRow) => r.headshot_url)
+      .filter((p): p is string => !!p);
+
+    const signedUrlMap: Record<string, string> = {};
+    if (headshotPaths.length > 0) {
+      const { data: signedList, error: signErr } = await supabase.storage
+        .from('rosters')
+        .createSignedUrls(headshotPaths, 3600);
+      if (signErr) console.warn('[check-roster] createSignedUrls error:', signErr.message);
+      for (const item of signedList ?? []) {
+        if (item.signedUrl) signedUrlMap[item.path] = item.signedUrl;
+      }
+    }
+
+    const athletes = sessionRows.map((row: RosterRow) => ({
+      id: row.id,
+      name: row.name,
+      jersey_number: row.jersey_number ?? null,
+      headshot_url: row.headshot_url ? (signedUrlMap[row.headshot_url] ?? null) : null,
+    }));
 
     return NextResponse.json({ ok: true, exists: true, session_id: sessionId, athletes });
   } catch (err) {
