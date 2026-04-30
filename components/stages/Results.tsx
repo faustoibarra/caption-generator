@@ -5,6 +5,8 @@ import JSZip from 'jszip';
 import { useJobStore } from '@/lib/store';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 type PhotoStatus = 'queued' | 'processing' | 'matched' | 'unmatched' | 'error' | 'skipped';
 
@@ -68,6 +70,11 @@ export function Results() {
   const [downloadProgress, setDownloadProgress] = useState<{ done: number; total: number } | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
+  type FilenameFormat = 'original' | 'sequence' | 'uuid';
+  const [showFilenameDialog, setShowFilenameDialog] = useState(false);
+  const [filenameFormat, setFilenameFormat] = useState<FilenameFormat>('original');
+  const [sequencePrefix, setSequencePrefix] = useState(jobName || 'IMG');
+
   useEffect(() => {
     if (!sessionId) return;
     fetch(`/api/photos/results?session_id=${encodeURIComponent(sessionId)}`)
@@ -80,8 +87,9 @@ export function Results() {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
-  async function handleDownload() {
+  async function handleDownload(format: FilenameFormat, prefix: string) {
     if (!sessionId) return;
+    setShowFilenameDialog(false);
     setDownloading(true);
     setDownloadError(null);
     setDownloadProgress(null);
@@ -95,16 +103,21 @@ export function Results() {
       }
       const { files } = await urlsResp.json() as { files: { filename: string; url: string }[] };
 
-      // 2. Download each file and add to ZIP, updating progress as we go
+      // 2. Download each file and add to ZIP with chosen filename format
       const zip = new JSZip();
       setDownloadProgress({ done: 0, total: files.length });
 
       for (let i = 0; i < files.length; i++) {
         const { filename, url } = files[i];
+        const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : '.jpg';
+        const zipName =
+          format === 'sequence' ? `${prefix}_${String(i + 1).padStart(3, '0')}${ext}` :
+          format === 'uuid'     ? `${crypto.randomUUID()}${ext}` :
+          filename;
         const fileResp = await fetch(url);
         if (!fileResp.ok) throw new Error(`Failed to fetch ${filename}`);
         const buffer = await fileResp.arrayBuffer();
-        zip.file(filename, buffer);
+        zip.file(zipName, buffer);
         setDownloadProgress({ done: i + 1, total: files.length });
       }
 
@@ -216,17 +229,63 @@ export function Results() {
           </div>
         )}
 
+        {/* Filename format dialog */}
+        {showFilenameDialog && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFilenameDialog(false)}>
+            <div className="bg-background rounded-xl border shadow-lg w-full max-w-sm mx-4 p-6 space-y-5" onClick={(e) => e.stopPropagation()}>
+              <h2 className="text-base font-semibold">Choose filename format</h2>
+              <div className="space-y-3">
+                {([
+                  { value: 'original', label: 'Original filenames', description: 'Keep the uploaded filenames as-is' },
+                  { value: 'sequence', label: 'Prefix + sequence', description: 'e.g. IMG_001.jpg, IMG_002.jpg' },
+                  { value: 'uuid',     label: 'UUID',              description: 'e.g. 550e8400-e29b…-446655440000.jpg' },
+                ] as { value: FilenameFormat; label: string; description: string }[]).map(({ value, label, description }) => (
+                  <label key={value} className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="filenameFormat"
+                      value={value}
+                      checked={filenameFormat === value}
+                      onChange={() => setFilenameFormat(value)}
+                      className="mt-0.5 accent-primary"
+                    />
+                    <div>
+                      <p className="text-sm font-medium">{label}</p>
+                      <p className="text-xs text-muted-foreground">{description}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              {filenameFormat === 'sequence' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="seq-prefix">Prefix</Label>
+                  <Input
+                    id="seq-prefix"
+                    value={sequencePrefix}
+                    onChange={(e) => setSequencePrefix(e.target.value)}
+                    placeholder="IMG"
+                  />
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <Button variant="outline" onClick={() => setShowFilenameDialog(false)}>Cancel</Button>
+                <Button onClick={() => handleDownload(filenameFormat, sequencePrefix)}>Download</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Download / New Job actions */}
         {!loading && !fetchError && (
           <div className="space-y-2">
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-              <Button onClick={handleDownload} disabled={downloading}>
+              <Button onClick={() => setShowFilenameDialog(true)} disabled={downloading}>
                 {downloading ? 'Preparing ZIP…' : 'Download All'}
               </Button>
               {downloadError && (
                 <div className="flex items-center gap-2 text-sm text-red-600">
                   <span>{downloadError}</span>
-                  <Button variant="outline" size="sm" onClick={handleDownload} disabled={downloading}>
+                  <Button variant="outline" size="sm" onClick={() => setShowFilenameDialog(true)} disabled={downloading}>
                     Retry
                   </Button>
                 </div>
