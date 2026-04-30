@@ -24,6 +24,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'No processed files found' }, { status: 404 });
   }
 
+  // Look up original filenames from the photos table keyed by processed_path
+  const { data: photoRows } = await supabase
+    .from('photos')
+    .select('processed_path, filename')
+    .eq('session_id', sessionId);
+
+  const filenameByPath: Record<string, string> = {};
+  for (const row of photoRows ?? []) {
+    if (row.processed_path) filenameByPath[row.processed_path] = row.filename;
+  }
+
   // Generate signed URLs for all files in parallel
   const fileList = await Promise.all(
     files.map(async (file: { name: string }) => {
@@ -31,7 +42,8 @@ export async function GET(request: NextRequest) {
       const { data: signed } = await supabase.storage
         .from('photos-processed')
         .createSignedUrl(filePath, 3600);
-      return { filename: file.name, url: signed?.signedUrl ?? null };
+      const originalFilename = filenameByPath[filePath] ?? file.name;
+      return { filename: originalFilename, url: signed?.signedUrl ?? null };
     })
   );
 
