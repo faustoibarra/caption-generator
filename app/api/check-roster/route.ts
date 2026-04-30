@@ -39,13 +39,23 @@ export async function GET(req: NextRequest) {
     const sessionRows = (rows as RosterRow[]).filter((r) => r.session_id === sessionId);
 
     // Generate signed URLs for headshots
+    let signFailures = 0;
+    let firstFailureMsg = '';
+    let firstFailurePath = '';
     const athletes = await Promise.all(
       sessionRows.map(async (row: RosterRow) => {
         let signedUrl: string | null = null;
         if (row.headshot_url) {
-          const { data: signed } = await supabase.storage
+          const { data: signed, error: signErr } = await supabase.storage
             .from('rosters')
             .createSignedUrl(row.headshot_url, 3600);
+          if (signErr || !signed?.signedUrl) {
+            signFailures++;
+            if (!firstFailureMsg) {
+              firstFailureMsg = signErr?.message ?? 'no signedUrl returned';
+              firstFailurePath = row.headshot_url;
+            }
+          }
           signedUrl = signed?.signedUrl ?? null;
         }
         return {
@@ -56,6 +66,7 @@ export async function GET(req: NextRequest) {
         };
       })
     );
+    console.log(`[check-roster] sign_failures=${signFailures}/${sessionRows.length} first_failure_path=${firstFailurePath} first_failure_msg=${firstFailureMsg}`);
 
     return NextResponse.json({ ok: true, exists: true, session_id: sessionId, athletes });
   } catch (err) {
