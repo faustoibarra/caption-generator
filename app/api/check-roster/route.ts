@@ -68,6 +68,14 @@ export async function GET(req: NextRequest) {
     );
     console.log(`[check-roster] sign_failures=${signFailures}/${sessionRows.length} first_failure_path=${firstFailurePath} first_failure_msg=${firstFailureMsg}`);
 
+    // If every headshot file is missing from storage, the roster is unusable —
+    // treat it as not-existing so the user is forced to rescrape and repopulate.
+    const headshotsExpected = sessionRows.filter((r) => r.headshot_url).length;
+    if (headshotsExpected > 0 && signFailures === headshotsExpected) {
+      console.log(`[check-roster] all headshots missing — returning exists=false to force rescrape`);
+      return NextResponse.json({ ok: true, exists: false });
+    }
+
     return NextResponse.json({ ok: true, exists: true, session_id: sessionId, athletes });
   } catch (err) {
     return NextResponse.json(
