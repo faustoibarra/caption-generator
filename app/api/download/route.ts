@@ -32,12 +32,9 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const { data: rosterFiles } = await supabase.storage.from('rosters').list(sessionId);
-    if (rosterFiles && rosterFiles.length > 0) {
-      await supabase.storage.from('rosters').remove(
-        rosterFiles.map((f: { name: string }) => `${sessionId}/${f.name}`)
-      );
-    }
+    // Roster headshot files in the 'rosters' bucket are NOT deleted here.
+    // roster_athletes rows persist so the roster can be reused across jobs;
+    // deleting the files would cause check-roster to return null headshot URLs.
 
     await supabase.from('photos').delete().eq('session_id', sessionId);
 
