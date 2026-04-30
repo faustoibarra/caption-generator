@@ -17,6 +17,7 @@ export function SetupForm() {
   const [sport, setSport] = useState('');
   const [hasJerseyNumbers, setHasJerseyNumbers] = useState(false);
   const [recognitionEngine, setRecognitionEngine] = useState<'claude' | 'rekognition'>('rekognition');
+  const [rosterScrapingMethod, setRosterScrapingMethod] = useState<'programmatic' | 'claude'>('programmatic');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.4);
   const [submitting, setSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -66,15 +67,15 @@ export function SetupForm() {
 
   async function scrapeAndContinue(rescrape = false) {
     const sessionId = crypto.randomUUID();
-    setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, recognitionEngine, confidenceThreshold, sessionId });
+    setSetup({ jobName, rosterUrl, sport, hasJerseyNumbers, recognitionEngine, rosterScrapingMethod, confidenceThreshold, sessionId });
     setSubmitting(true);
 
-    const MAX_ATTEMPTS = 5;
+    const MAX_ATTEMPTS = rosterScrapingMethod === 'programmatic' ? 1 : 5;
     let lastError: Error = new Error('Unknown error during roster scraping.');
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const msg = attempt === 1
-        ? undefined
+        ? (rosterScrapingMethod === 'programmatic' ? 'Scraping roster…' : undefined)
         : `Claude timed out — retrying (${attempt} of ${MAX_ATTEMPTS})…`;
       startScraping(msg);
 
@@ -88,6 +89,7 @@ export function SetupForm() {
             sport,
             has_jersey_numbers: hasJerseyNumbers,
             recognition_engine: recognitionEngine,
+            roster_scraping_method: rosterScrapingMethod,
             rescrape,
           }),
         });
@@ -121,6 +123,7 @@ export function SetupForm() {
       sport,
       hasJerseyNumbers,
       recognitionEngine,
+      rosterScrapingMethod,
       confidenceThreshold,
       sessionId: existingRoster.sessionId,
     });
@@ -246,6 +249,40 @@ export function SetupForm() {
                 onChange={(e) => setRosterUrl(e.target.value)}
                 required
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Roster Scraping</Label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="rosterScrapingMethod"
+                    value="programmatic"
+                    checked={rosterScrapingMethod === 'programmatic'}
+                    onChange={() => setRosterScrapingMethod('programmatic')}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Programmatic</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="rosterScrapingMethod"
+                    value="claude"
+                    checked={rosterScrapingMethod === 'claude'}
+                    onChange={() => setRosterScrapingMethod('claude')}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Claude AI</span>
+                </label>
+              </div>
+              {rosterScrapingMethod === 'programmatic' && (
+                <p className="text-xs text-muted-foreground">Fast, free — works for gostanford.com rosters</p>
+              )}
+              {rosterScrapingMethod === 'claude' && (
+                <p className="text-xs text-muted-foreground">Uses Claude API — slower but handles any roster format</p>
+              )}
             </div>
 
             <div className="space-y-1.5">

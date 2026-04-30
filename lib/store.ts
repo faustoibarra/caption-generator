@@ -38,6 +38,7 @@ interface JobStore {
   sport: string;
   hasJerseyNumbers: boolean;
   recognitionEngine: 'claude' | 'rekognition';
+  rosterScrapingMethod: 'programmatic' | 'claude';
   confidenceThreshold: number;
   errorMessage: string | null;
   scrapingMessage: string | null;
@@ -54,6 +55,7 @@ interface JobStore {
     sport: string;
     hasJerseyNumbers: boolean;
     recognitionEngine: 'claude' | 'rekognition';
+    rosterScrapingMethod: 'programmatic' | 'claude';
     confidenceThreshold: number;
     sessionId: string;
   }) => void;
@@ -79,6 +81,7 @@ const initialState = {
   sport: '',
   hasJerseyNumbers: false,
   recognitionEngine: 'rekognition' as 'claude' | 'rekognition',
+  rosterScrapingMethod: 'programmatic' as 'programmatic' | 'claude',
   confidenceThreshold: 0.4,
   errorMessage: null,
   scrapingMessage: null,
@@ -101,6 +104,7 @@ export const useJobStore = create<JobStore>((set) => ({
       sport: fields.sport,
       hasJerseyNumbers: fields.hasJerseyNumbers,
       recognitionEngine: fields.recognitionEngine,
+      rosterScrapingMethod: fields.rosterScrapingMethod,
       confidenceThreshold: fields.confidenceThreshold,
       errorMessage: null,
     }),
