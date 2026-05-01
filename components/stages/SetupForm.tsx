@@ -336,7 +336,7 @@ export function SetupForm() {
                 type="number"
                 min={0.2}
                 max={1.0}
-                step={0.05}
+                step={0.01}
                 value={confidenceThreshold}
                 onChange={(e) => setConfidenceThreshold(parseFloat(e.target.value))}
               />
