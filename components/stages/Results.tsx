@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 
 type PhotoStatus = 'queued' | 'processing' | 'matched' | 'unmatched' | 'error' | 'skipped';
 
@@ -74,6 +75,7 @@ export function Results() {
   const [showFilenameDialog, setShowFilenameDialog] = useState(false);
   const [filenameFormat, setFilenameFormat] = useState<FilenameFormat>('original');
   const [sequencePrefix, setSequencePrefix] = useState(jobName || 'IMG');
+  const [appendConfidence, setAppendConfidence] = useState(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -87,7 +89,7 @@ export function Results() {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
-  async function handleDownload(format: FilenameFormat, prefix: string) {
+  async function handleDownload(format: FilenameFormat, prefix: string, withConfidence: boolean) {
     if (!sessionId) return;
     setShowFilenameDialog(false);
     setDownloading(true);
@@ -95,33 +97,49 @@ export function Results() {
     setDownloadProgress(null);
 
     try {
-      // 1. Get signed URLs for all processed files
-      const urlsResp = await fetch(`/api/download-urls?session_id=${encodeURIComponent(sessionId)}`);
-      if (!urlsResp.ok) {
-        const data = await urlsResp.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error ?? `Failed to get download URLs (${urlsResp.status})`);
-      }
-      const { files } = await urlsResp.json() as { files: { filename: string; url: string }[] };
-
-      // 2. Download each file and add to ZIP with chosen filename format
       const zip = new JSZip();
-      setDownloadProgress({ done: 0, total: files.length });
 
-      for (let i = 0; i < files.length; i++) {
-        const { filename, url } = files[i];
-        const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : '.jpg';
-        const zipName =
-          format === 'sequence' ? `${prefix}_${String(i + 1).padStart(3, '0')}${ext}` :
-          format === 'uuid'     ? `${crypto.randomUUID()}${ext}` :
-          filename;
-        const fileResp = await fetch(url);
-        if (!fileResp.ok) throw new Error(`Failed to fetch ${filename}`);
-        const buffer = await fileResp.arrayBuffer();
-        zip.file(zipName, buffer);
-        setDownloadProgress({ done: i + 1, total: files.length });
+      if (withConfidence) {
+        // Per-photo endpoint rewrites Personality with confidence % appended
+        setDownloadProgress({ done: 0, total: photos.length });
+        for (let i = 0; i < photos.length; i++) {
+          const photo = photos[i];
+          const ext = photo.filename.includes('.') ? photo.filename.slice(photo.filename.lastIndexOf('.')) : '.jpg';
+          const zipName =
+            format === 'sequence' ? `${prefix}_${String(i + 1).padStart(3, '0')}${ext}` :
+            format === 'uuid'     ? `${crypto.randomUUID()}${ext}` :
+            photo.filename;
+          const fileResp = await fetch(`/api/photos/${photo.id}/download-file?append_confidence=true`);
+          if (!fileResp.ok) throw new Error(`Failed to fetch ${photo.filename}`);
+          const buffer = await fileResp.arrayBuffer();
+          zip.file(zipName, buffer);
+          setDownloadProgress({ done: i + 1, total: photos.length });
+        }
+      } else {
+        // Standard flow: signed URLs from storage
+        const urlsResp = await fetch(`/api/download-urls?session_id=${encodeURIComponent(sessionId)}`);
+        if (!urlsResp.ok) {
+          const data = await urlsResp.json().catch(() => ({}));
+          throw new Error((data as { error?: string }).error ?? `Failed to get download URLs (${urlsResp.status})`);
+        }
+        const { files } = await urlsResp.json() as { files: { filename: string; url: string }[] };
+        setDownloadProgress({ done: 0, total: files.length });
+
+        for (let i = 0; i < files.length; i++) {
+          const { filename, url } = files[i];
+          const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : '.jpg';
+          const zipName =
+            format === 'sequence' ? `${prefix}_${String(i + 1).padStart(3, '0')}${ext}` :
+            format === 'uuid'     ? `${crypto.randomUUID()}${ext}` :
+            filename;
+          const fileResp = await fetch(url);
+          if (!fileResp.ok) throw new Error(`Failed to fetch ${filename}`);
+          const buffer = await fileResp.arrayBuffer();
+          zip.file(zipName, buffer);
+          setDownloadProgress({ done: i + 1, total: files.length });
+        }
       }
 
-      // 3. Generate ZIP in browser
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       const blobUrl = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
@@ -130,7 +148,6 @@ export function Results() {
       a.click();
       URL.revokeObjectURL(blobUrl);
 
-      // 4. Clean up storage after successful download
       await fetch(`/api/download?session_id=${encodeURIComponent(sessionId)}&recognition_engine=${recognitionEngine}`, { method: 'DELETE' });
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Download failed');
@@ -267,9 +284,23 @@ export function Results() {
                   />
                 </div>
               )}
+              <div className="border-t pt-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <Checkbox
+                    id="appendConfidence"
+                    checked={appendConfidence}
+                    onCheckedChange={(checked) => setAppendConfidence(checked === true)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <p className="text-sm font-medium">Append confidence to Personality field</p>
+                    <p className="text-xs text-muted-foreground">e.g. "Valerie Glozman (53%)" — matched photos only</p>
+                  </div>
+                </label>
+              </div>
               <div className="flex justify-end gap-2 pt-1">
                 <Button variant="outline" onClick={() => setShowFilenameDialog(false)}>Cancel</Button>
-                <Button onClick={() => handleDownload(filenameFormat, sequencePrefix)}>Download</Button>
+                <Button onClick={() => handleDownload(filenameFormat, sequencePrefix, appendConfidence)}>Download</Button>
               </div>
             </div>
           </div>

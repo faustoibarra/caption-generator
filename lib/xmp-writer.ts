@@ -59,6 +59,40 @@ export async function writeAthleteNames(
   return rebuildJpeg(jpgBuffer, app1Start, segmentEnd, xmlStart, newXml);
 }
 
+/**
+ * Rewrites only the GettyImagesGIFT:Personality field in the XMP metadata.
+ * Use this to append confidence percentages at download time without touching
+ * dc:description or dc:title.
+ *
+ * @throws Error if no XMP APP1 segment is found.
+ */
+export async function writePersonalityOnly(
+  jpgBuffer: Buffer,
+  names: string[]
+): Promise<Buffer> {
+  const markerIdx = findXmpMarker(jpgBuffer);
+  if (markerIdx === -1) throw new Error('XMP segment not found');
+
+  const app1Start = markerIdx - 4;
+  const segmentLength = jpgBuffer.readUInt16BE(app1Start + 2);
+  const xmlStart = markerIdx + Buffer.byteLength(XMP_NAMESPACE, 'binary');
+  const segmentEnd = app1Start + 2 + segmentLength;
+
+  const originalXml = jpgBuffer.subarray(xmlStart, segmentEnd).toString('utf8');
+  const { packetBegin, innerXml, packetEnd } = splitXpacket(originalXml);
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(innerXml, 'text/xml');
+
+  updatePersonInImage(doc, names);
+
+  const serializer = new XMLSerializer();
+  const newInnerXml = serializer.serializeToString(doc);
+  const newXml = reassembleXpacket(packetBegin, newInnerXml, packetEnd, originalXml.length);
+
+  return rebuildJpeg(jpgBuffer, app1Start, segmentEnd, xmlStart, newXml);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

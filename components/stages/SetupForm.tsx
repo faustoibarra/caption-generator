@@ -18,7 +18,7 @@ export function SetupForm() {
   const [hasJerseyNumbers, setHasJerseyNumbers] = useState(false);
   const [recognitionEngine, setRecognitionEngine] = useState<'claude' | 'rekognition'>('rekognition');
   const [rosterScrapingMethod, setRosterScrapingMethod] = useState<'programmatic' | 'claude'>('programmatic');
-  const [confidenceThreshold, setConfidenceThreshold] = useState(0.4);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.98);
   const [submitting, setSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -294,7 +294,7 @@ export function SetupForm() {
                     name="recognitionEngine"
                     value="claude"
                     checked={recognitionEngine === 'claude'}
-                    onChange={() => setRecognitionEngine('claude')}
+                    onChange={() => { setRecognitionEngine('claude'); setConfidenceThreshold(0.9); }}
                     className="accent-primary"
                   />
                   <span className="text-sm">Claude Vision</span>
@@ -305,7 +305,7 @@ export function SetupForm() {
                     name="recognitionEngine"
                     value="rekognition"
                     checked={recognitionEngine === 'rekognition'}
-                    onChange={() => setRecognitionEngine('rekognition')}
+                    onChange={() => { setRecognitionEngine('rekognition'); setConfidenceThreshold(0.98); }}
                     className="accent-primary"
                   />
                   <span className="text-sm">AWS Rekognition</span>

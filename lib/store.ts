@@ -82,7 +82,7 @@ const initialState = {
   hasJerseyNumbers: false,
   recognitionEngine: 'rekognition' as 'claude' | 'rekognition',
   rosterScrapingMethod: 'programmatic' as 'programmatic' | 'claude',
-  confidenceThreshold: 0.4,
+  confidenceThreshold: 0.98,
   errorMessage: null,
   scrapingMessage: null,
   athletes: [],
