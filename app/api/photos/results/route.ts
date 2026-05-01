@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
 
   const { data: photos, error } = await supabase
     .from('photos')
-    .select('id, filename, status, storage_path, matched_names, face_confidence, jersey_confidence, match_type')
+    .select('id, filename, status, storage_path, matched_names, face_confidence, jersey_confidence, match_type, athlete_confidences')
     .eq('session_id', sessionId)
     .order('created_at', { ascending: true });
 
@@ -35,6 +35,7 @@ export async function GET(request: NextRequest) {
     face_confidence: number | null;
     jersey_confidence: number | null;
     match_type: string | null;
+    athlete_confidences: { name: string; confidence: number }[] | null;
   }
 
   const rows = await Promise.all(
@@ -51,6 +52,7 @@ export async function GET(request: NextRequest) {
         matchType: p.match_type ?? null,
         faceConfidence: p.face_confidence ?? null,
         jerseyConfidence: p.jersey_confidence ?? null,
+        athleteConfidences: p.athlete_confidences ?? null,
         thumbnailUrl: signed?.signedUrl ?? null,
       };
     })

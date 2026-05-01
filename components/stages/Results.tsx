@@ -19,6 +19,7 @@ interface PhotoRow {
   matchType: string | null;
   faceConfidence: number | null;
   jerseyConfidence: number | null;
+  athleteConfidences: { name: string; confidence: number }[] | null;
   thumbnailUrl: string | null;
 }
 
@@ -379,7 +380,11 @@ export function Results() {
                         <StatusBadge status={row.status} />
                       </td>
                       <td className="px-3 py-2 text-xs">
-                        {row.matchedNames?.join(', ') ?? '—'}
+                        {row.athleteConfidences && row.athleteConfidences.length > 0
+                          ? row.athleteConfidences.map(({ name, confidence }) =>
+                              `${name} (${Math.round(confidence * 100)}%)`
+                            ).join(', ')
+                          : row.matchedNames?.join(', ') ?? '—'}
                       </td>
                       <td className="px-3 py-2">
                         <MatchTypeBadge matchType={row.matchType} />
