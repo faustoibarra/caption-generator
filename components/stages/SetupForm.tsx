@@ -340,6 +340,9 @@ export function SetupForm() {
                 value={confidenceThreshold}
                 onChange={(e) => setConfidenceThreshold(parseFloat(e.target.value))}
               />
+              <p className="text-xs text-muted-foreground">
+                Matches below this level will show their confidence % in the Personality field when that option is selected at download
+              </p>
             </div>
 
             {validationError && (

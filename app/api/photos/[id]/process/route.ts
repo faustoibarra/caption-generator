@@ -125,6 +125,7 @@ export async function POST(
     faceConfidence: number | null,
     jerseyConfidence: number | null,
     matchType: string,
+    athleteConfidences: { name: string; confidence: number }[],
   ) {
     const { data: thumbData } = await supabase.storage.from('photos-original').createSignedUrl(storage_path, 3600);
     const thumbnailUrl = thumbData?.signedUrl ?? null;
@@ -159,6 +160,7 @@ export async function POST(
       jersey_confidence: jerseyConfidence,
       match_type: matchType,
       processed_path: processedPath,
+      athlete_confidences: athleteConfidences,
     }).eq('id', id);
 
     return NextResponse.json({ status: 'matched', matched_names: matchedNames, face_confidence: faceConfidence, jersey_confidence: jerseyConfidence, match_type: matchType, filename, thumbnail_url: thumbnailUrl });
@@ -169,7 +171,7 @@ export async function POST(
     console.log(`[process] Calling Rekognition id=${id}`);
     let matches;
     try {
-      matches = await searchFacesByImage(session_id, resizedBuffer, confidence_threshold);
+      matches = await searchFacesByImage(session_id, resizedBuffer);
       console.log(`[process] Rekognition done id=${id} matches=${matches.length}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Rekognition API error';
@@ -193,14 +195,22 @@ export async function POST(
     console.log(`[process] DB lookup found=${athleteRows?.length ?? 0} err=${athleteErr?.message ?? 'none'}`);
 
     const sortedMatches = [...matches].sort((a, b) => a.boundingBoxLeft - b.boundingBoxLeft);
+    const rows = athleteRows as { id: string; name: string }[] | null;
     const matchedNames = sortedMatches
-      .map((m) => (athleteRows as { id: string; name: string }[] | null)?.find((a) => a.id === m.athleteId)?.name)
+      .map((m) => rows?.find((a) => a.id === m.athleteId)?.name)
       .filter((n): n is string => Boolean(n));
 
     if (matchedNames.length === 0) return finishUnmatched();
 
+    const athleteConfidences = sortedMatches
+      .map((m) => {
+        const name = rows?.find((a) => a.id === m.athleteId)?.name;
+        return name ? { name, confidence: m.similarity } : null;
+      })
+      .filter((e): e is { name: string; confidence: number } => e !== null);
+
     const maxFaceConfidence = Math.max(...sortedMatches.map((m) => m.similarity));
-    return finishMatched(matchedNames, maxFaceConfidence, null, 'face');
+    return finishMatched(matchedNames, maxFaceConfidence, null, 'face', athleteConfidences);
   }
 
   // ── Claude path ──────────────────────────────────────────────────────────────
@@ -310,20 +320,24 @@ If no athletes can be identified, return: { "athletes": [] }`,
 
   const rawAthletes: ClaudeAthlete[] = parsed.athletes ?? [];
 
-  // 8. Filter to athletes meeting confidence threshold (face OR jersey)
-  const matched = rawAthletes.filter(
-    (a) => (a.face_confidence ?? 0) >= confidence_threshold || (a.jersey_confidence ?? 0) >= confidence_threshold
+  // 8. Include all athletes Claude detected with any confidence
+  const detected = rawAthletes.filter(
+    (a) => (a.face_confidence ?? 0) > 0 || (a.jersey_confidence ?? 0) > 0
   );
 
-  if (matched.length === 0) return finishUnmatched();
+  if (detected.length === 0) return finishUnmatched();
 
-  matched.sort((a, b) => a.position_x - b.position_x);
-  const matchedNames = matched.map((a) => a.name);
-  const maxFace = Math.max(...matched.map((a) => a.face_confidence ?? 0));
-  const maxJersey = Math.max(...matched.map((a) => a.jersey_confidence ?? 0));
-  const hasFace = matched.some((a) => (a.face_confidence ?? 0) >= confidence_threshold);
-  const hasJersey = matched.some((a) => (a.jersey_confidence ?? 0) >= confidence_threshold);
+  detected.sort((a, b) => a.position_x - b.position_x);
+  const matchedNames = detected.map((a) => a.name);
+  const athleteConfidences = detected.map((a) => ({
+    name: a.name,
+    confidence: Math.max(a.face_confidence ?? 0, a.jersey_confidence ?? 0),
+  }));
+  const maxFace = Math.max(...detected.map((a) => a.face_confidence ?? 0));
+  const maxJersey = Math.max(...detected.map((a) => a.jersey_confidence ?? 0));
+  const hasFace = detected.some((a) => (a.face_confidence ?? 0) > 0);
+  const hasJersey = detected.some((a) => (a.jersey_confidence ?? 0) > 0);
   const matchType = hasFace && hasJersey ? 'both' : hasFace ? 'face' : 'jersey';
 
-  return finishMatched(matchedNames, maxFace > 0 ? maxFace : null, maxJersey > 0 ? maxJersey : null, matchType);
+  return finishMatched(matchedNames, maxFace > 0 ? maxFace : null, maxJersey > 0 ? maxJersey : null, matchType, athleteConfidences);
 }

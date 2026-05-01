@@ -61,7 +61,7 @@ function bestConfidence(row: PhotoRow): number {
 }
 
 export function Results() {
-  const { sessionId, jobName, batchNumber, recognitionEngine, reset } = useJobStore();
+  const { sessionId, jobName, batchNumber, recognitionEngine, confidenceThreshold, reset } = useJobStore();
 
   const [photos, setPhotos] = useState<PhotoRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,7 +109,7 @@ export function Results() {
             format === 'sequence' ? `${prefix}_${String(i + 1).padStart(3, '0')}${ext}` :
             format === 'uuid'     ? `${crypto.randomUUID()}${ext}` :
             photo.filename;
-          const fileResp = await fetch(`/api/photos/${photo.id}/download-file?append_confidence=true`);
+          const fileResp = await fetch(`/api/photos/${photo.id}/download-file?append_confidence=true&threshold=${confidenceThreshold}`);
           if (!fileResp.ok) throw new Error(`Failed to fetch ${photo.filename}`);
           const buffer = await fileResp.arrayBuffer();
           zip.file(zipName, buffer);

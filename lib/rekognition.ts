@@ -54,7 +54,6 @@ export interface FaceMatch {
 export async function searchFacesByImage(
   collectionId: string,
   imageBytes: Buffer,
-  confidenceThreshold: number, // 0–1; converted to 0–100 for Rekognition
 ): Promise<FaceMatch[]> {
   const client = getClient();
 
@@ -95,7 +94,7 @@ export async function searchFacesByImage(
         const result = await client.send(new SearchFacesByImageCommand({
           CollectionId: collectionId,
           Image: { Bytes: crop },
-          FaceMatchThreshold: confidenceThreshold * 100,
+          FaceMatchThreshold: 0,
           MaxFaces: 1,
         }));
         const match = result.FaceMatches?.[0];
