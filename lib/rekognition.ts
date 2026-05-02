@@ -94,7 +94,7 @@ export async function searchFacesByImage(
         const result = await client.send(new SearchFacesByImageCommand({
           CollectionId: collectionId,
           Image: { Bytes: crop },
-          FaceMatchThreshold: 0,
+          FaceMatchThreshold: 40,
           MaxFaces: 1,
         }));
         const match = result.FaceMatches?.[0];
