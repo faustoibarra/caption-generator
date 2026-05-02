@@ -137,20 +137,26 @@ def _clean_name(s: str) -> str:
 
 
 def normalise_player(p: dict) -> dict:
-    # Name — stored in photo.title or photo.alt.
-    # Some entries have the original filename in title; fall back to alt.
+    # Name — prefer player.full_name (always present and correct on Sidearm rosters).
+    # Fall back to photo.title / photo.alt for any roster that lacks the player sub-object.
+    # This fixes sports like rowing where photo.title is a generic filename and photo.alt is null.
     name = ""
-    photo_obj = p.get("photo")
-    if isinstance(photo_obj, dict):
-        title = _clean_name(str(photo_obj.get("title") or ""))
-        alt = _clean_name(str(photo_obj.get("alt") or ""))
-        if title and not _looks_like_filename(title):
-            name = title
-        elif alt and not _looks_like_filename(alt):
-            name = alt
-        elif title:
-            # Last resort: use the part of the filename before the first underscore
-            name = title.split("_")[0].strip()
+    player_sub = p.get("player")
+    if isinstance(player_sub, dict):
+        name = (player_sub.get("full_name") or "").strip()
+
+    if not name:
+        photo_obj = p.get("photo")
+        if isinstance(photo_obj, dict):
+            title = _clean_name(str(photo_obj.get("title") or ""))
+            alt = _clean_name(str(photo_obj.get("alt") or ""))
+            if title and not _looks_like_filename(title):
+                name = title
+            elif alt and not _looks_like_filename(alt):
+                name = alt
+            elif title:
+                # Last resort: use the part of the filename before the first underscore
+                name = title.split("_")[0].strip()
 
     # Jersey — stored as integer; convert to string (None if missing/blank)
     jn = p.get("jersey_number")

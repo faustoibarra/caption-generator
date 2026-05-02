@@ -97,10 +97,18 @@ function extract480wUrl(srcset: string): string | null {
 }
 
 function normalisePlayer(p: AnyVal): RawAthlete | null {
-  // Name lives in photo.title or photo.alt (never as a top-level field)
+  // Name — prefer player.full_name (always present and correct on Sidearm rosters).
+  // Fall back to photo.title / photo.alt for any roster that lacks the player sub-object.
+  // This fixes sports like rowing where photo.title is a generic filename and photo.alt is null.
   let name = '';
+  const playerSub = p.player;
   const photoObj = p.photo;
-  if (photoObj && typeof photoObj === 'object') {
+
+  if (playerSub && typeof playerSub === 'object') {
+    name = String(playerSub.full_name ?? '').trim();
+  }
+
+  if (!name && photoObj && typeof photoObj === 'object') {
     const title = cleanName(String(photoObj.title ?? ''));
     const alt   = cleanName(String(photoObj.alt   ?? ''));
     if (title && !looksLikeFilename(title)) {
